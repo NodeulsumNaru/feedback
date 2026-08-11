@@ -1,4 +1,4 @@
-name = "feedlog"
+name = "feedback"
 compatibility_date = "2026-03-01"
 compatibility_flags = ["nodejs_compat"]
 
@@ -20,7 +20,7 @@ globs = ["**/*.sql", "**/_journal.json"]
 fallthrough = true
 
 # Hyperdrive accelerates your external Postgres connection.
-# Create one with: wrangler hyperdrive create feedlog --connection-string="postgresql://..."
+# Create one with: wrangler hyperdrive create feedback --connection-string="postgresql://..."
 # Replace the placeholder id below with the output. The one-click Deploy
 # Button walks the user through creating a Hyperdrive config and patches the
 # id in automatically.
@@ -29,17 +29,17 @@ binding = "POSTGRES"
 id = "REPLACE_WITH_YOUR_HYPERDRIVE_ID"
 
 # R2 bucket for blob storage (file uploads).
-# Create one with: wrangler r2 bucket create feedlog
+# Create one with: wrangler r2 bucket create feedback
 [[r2_buckets]]
 binding = "BLOB"
-bucket_name = "feedlog"
+bucket_name = "feedback"
 
 # Public (non-secret) configuration.
 # Secrets (BETTER_AUTH_SECRET, SYSTEM_ADMIN_EMAILS, GOOGLE_CLIENT_SECRET,
 # OPENAI_API_KEY, etc.) must be set via `wrangler secret put <NAME>` or via
 # the Deploy Button form (backed by .dev.vars.example), NOT declared here.
 [vars]
-BETTER_AUTH_URL = "https://your-worker.workers.dev"
+BETTER_AUTH_URL = "https://feedback.gyeol1102.workers.dev"
 # GOOGLE_CLIENT_ID = "your-google-oauth-client-id.apps.googleusercontent.com"
 
 # Secrets to configure via `wrangler secret put` (manual-deploy path):
