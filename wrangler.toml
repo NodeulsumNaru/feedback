@@ -28,11 +28,14 @@ fallthrough = true
 binding = "POSTGRES"
 id = "REPLACE_WITH_YOUR_HYPERDRIVE_ID"
 
-# R2 bucket for blob storage (file uploads).
-# Create one with: wrangler r2 bucket create feedback
-[[r2_buckets]]
-binding = "BLOB"
-bucket_name = "feedback"
+# R2는 결제(Cloudflare 플랜 업그레이드)가 필요해서 이번엔 안 씀.
+# 나중에 필요해지면 `wrangler r2 bucket create feedback` 하고 아래 주석을 풀면 됨.
+# 안 만든 상태에서 이 블록을 살려두면 배포 자체가 막히니(존재하지 않는
+# 바인딩이라) 지금은 통째로 빼둠 — 파일 업로드 기능만 비활성화되고 나머지는
+# 정상 동작함.
+# [[r2_buckets]]
+# binding = "BLOB"
+# bucket_name = "feedback"
 
 # Public (non-secret) configuration.
 # Secrets (BETTER_AUTH_SECRET, SYSTEM_ADMIN_EMAILS, GOOGLE_CLIENT_SECRET,
