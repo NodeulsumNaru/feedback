@@ -35,3 +35,6 @@ logs
 # Agent scratch space (screenshots, debug dumps, ad-hoc scripts)
 tmp/
 .playwright-mcp/
+node-compile-cache/
+.output/
+.nuxt/

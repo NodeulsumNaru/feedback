@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "nuxt build && mkdir -p .output/server/db && cp -r server/db/migrations .output/server/db/migrations",
-    "build:cf": "NITRO_PRESET=cloudflare-module pnpm build",
+    "build:cf": "NITRO_PRESET=cloudflare-module NODE_OPTIONS=--max-old-space-size=6144 pnpm build",
     "build:vercel": "pnpm migrate && NITRO_PRESET=vercel pnpm build",
     "deploy:cf": "wrangler deploy --cwd .output",
     "dev": "nuxt dev",

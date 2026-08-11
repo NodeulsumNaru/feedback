@@ -167,6 +167,16 @@ export default defineNuxtConfig({
       // Exclude md-editor-v3 from SSR bundle — it's browser-only and very large (~2MB)
       external: ['md-editor-v3'],
     },
+    build: {
+      // Cloudflare Workers Builds에서 빌드 중 OOM(heap out of memory)이 나서,
+      // 메모리를 꽤 잡아먹는 소스맵 생성을 프로덕션 빌드에서는 끔.
+      sourcemap: false,
+    },
+  },
+
+  sourcemap: {
+    server: false,
+    client: false,
   },
 
   ogImage: {
