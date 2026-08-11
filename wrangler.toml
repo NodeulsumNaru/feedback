@@ -26,7 +26,7 @@ fallthrough = true
 # id in automatically.
 [[hyperdrive]]
 binding = "POSTGRES"
-id = "REPLACE_WITH_YOUR_HYPERDRIVE_ID"
+id = "250340bde7be4a4a8220ccb2074e0d67"
 
 # R2는 결제(Cloudflare 플랜 업그레이드)가 필요해서 이번엔 안 씀.
 # 나중에 필요해지면 `wrangler r2 bucket create feedback` 하고 아래 주석을 풀면 됨.
