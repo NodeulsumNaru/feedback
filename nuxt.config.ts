@@ -18,7 +18,12 @@ export default defineNuxtConfig({
   $meta: { name: 'feedlog' },
 
   compatibilityDate: '2025-07-15',
-  devtools: { enabled: true },
+  // devtools는 로컬 개발용이라 배포 빌드엔 필요 없음. 게다가 @nuxthub/core의
+  // devtools 통합이 Prisma Studio(@prisma/client, @prisma/studio-core,
+  // @electric-sql/pglite 등 100MB+)를 끌고 들어오는데, cloudflare-module
+  // Nitro 번들링 단계에서 이게 같이 딸려 들어가면서 OOM(heap out of memory)의
+  // 주범이었음. 프로덕션 빌드에서는 꺼서 이 무거운 의존성 체인 자체를 빼버림.
+  devtools: { enabled: process.env.NODE_ENV !== 'production' },
 
   // NOTE: `#shared` is owned by the active Nuxt instance (the consumer), so
   // a downstream app extending this layer can place its own `shared/types/*`
@@ -161,6 +166,19 @@ export default defineNuxtConfig({
     unenv: {
       external: ['node:fs', 'node:fs/promises', 'node:path', 'node:process'],
     },
+    // Cloudflare Workers Builds에서 "Building Nuxt Nitro server (preset:
+    // cloudflare-module...)" 단계에서 OOM이 났던 진짜 원인은 devtools가 끌고
+    // 오는 Prisma Studio 관련 의존성이었음(위 devtools 옵션 참고). 압축/소스맵은
+    // 그래도 가벼운 안전장치로 꺼둠.
+    // Nitro의 기본 node-externals 플러그인에 캐싱 버그가 있어서(nitrojs/nitro#2369),
+    // 무거운 의존성이 많을 때 모듈 해석이 계속 캐시를 못 맞추고 반복되면서
+    // 메모리 사용량이 기하급수적으로 늘어남 - 이게 cloudflare-module 번들링
+    // 단계에서 OOM(heap out of memory) 나던 진짜 근본 원인이었음.
+    experimental: {
+      legacyExternals: true,
+    },
+    minify: false,
+    sourceMap: false,
   },
 
   vite: {

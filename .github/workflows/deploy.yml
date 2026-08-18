@@ -1,0 +1,46 @@
+name: Deploy to Cloudflare Workers
+
+# Cloudflare Workers Builds의 빌드 머신은 메모리가 넉넉하지 않아서(정확한 수치는
+# 비공개지만 실측상 2~2.3GB 선), 이 프로젝트처럼 무거운 의존성(openai, drizzle,
+# md-editor-v3 등)이 많으면 "Building Nuxt Nitro server" 단계에서 힙이 부족해
+# 죽는 경우가 있음(--max-old-space-size를 올려도 컨테이너 물리 메모리 자체가
+# 부족하면 소용없음). GitHub Actions의 기본 러너는 RAM이 훨씬 넉넉해서(7GB+),
+# 여기서 빌드하고 결과물만 wrangler로 배포하면 이 문제를 완전히 피할 수 있음.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (cloudflare-module preset)
+        run: pnpm build:cf
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: .output
+          command: deploy
