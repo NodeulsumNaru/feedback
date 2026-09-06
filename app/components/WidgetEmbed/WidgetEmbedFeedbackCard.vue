@@ -12,6 +12,8 @@ const { t } = useI18n()
 <template>
   <button
     class="w-full text-left mt-2 min-w-[230px] px-3 py-2.5 rounded-md border border-border bg-background hover:border-primary/50 transition-colors group"
+    data-fdl-action="widget_feedback_open"
+    data-fdl-source="ai-card"
     @click="$emit('open')"
   >
     <p class="text-[13px] font-semibold leading-snug">{{ title }}</p>

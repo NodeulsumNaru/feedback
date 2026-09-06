@@ -1,13 +1,15 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
-import { admin, bearer, customSession, organization } from 'better-auth/plugins'
+import { admin, anonymous, bearer, customSession, organization } from 'better-auth/plugins'
 import { defu } from 'defu'
 import { eq } from 'drizzle-orm'
 import { uuidv7 } from 'uuidv7'
 import { db } from '../db'
-import { member, organization as orgTable } from '../db/schemas'
+import { member, organization as orgTable, user as userTable } from '../db/schemas'
 import { ac, contributor, manager, owner } from '../../shared/auth/permissions'
 import { DEFAULT_ORG_ID } from '../../shared/constants/default-org'
+import { GUEST_EMAIL_DOMAIN } from '../../shared/utils/guest'
+import { guestTag } from '../../shared/utils/identity'
 import { hashPassword, verifyPassword } from './password-hash'
 import { consola } from 'consola'
 
@@ -36,17 +38,28 @@ if (!hasOAuth && !emailLoginEnabled) {
   )
 }
 
-const socialProviders: Record<string, { clientId: string; clientSecret: string }> = {}
+// overrideUserInfoOnSignIn re-syncs name / avatar / email from the provider on
+// every OAuth sign-in. FeedLog has no self-serve profile editor, so the provider
+// is the source of truth — without this a rename on their side would stay
+// invisible here forever. Note it only fires on a fresh OAuth callback, not on
+// an existing session.
+const socialProviders: Record<string, {
+  clientId: string
+  clientSecret: string
+  overrideUserInfoOnSignIn: boolean
+}> = {}
 if (hasGoogle) {
   socialProviders.google = {
     clientId: env.GOOGLE_CLIENT_ID!,
     clientSecret: env.GOOGLE_CLIENT_SECRET!,
+    overrideUserInfoOnSignIn: true,
   }
 }
 if (hasGithub) {
   socialProviders.github = {
     clientId: env.GITHUB_CLIENT_ID!,
     clientSecret: env.GITHUB_CLIENT_SECRET!,
+    overrideUserInfoOnSignIn: true,
   }
 }
 
@@ -115,6 +128,16 @@ async function bootstrapAfterUserCreate(newUser: { id: string; email: string }) 
   }).onConflictDoNothing()
 }
 
+// The plugin picks the name before the row exists, so the id-derived tag can only
+// be written once it does. One extra UPDATE, on a path that runs at most once per
+// guest — worth it so the dashboard and a raw DB query can tell two guests apart
+// without composing the tag themselves.
+async function nameGuestUser(userId: string) {
+  await db.update(userTable)
+    .set({ name: `Anonymous ${guestTag(userId)}` })
+    .where(eq(userTable.id, userId))
+}
+
 // Extension points for `buildAuthConfig` callers. Granular knobs beat
 // trying to merge BetterAuthOptions wholesale — the organization plugin
 // must be re-instantiated to take new options, plugin arrays can't simply
@@ -169,6 +192,17 @@ export function buildAuthConfig(overrides: AuthConfigOverrides = {}): BetterAuth
     sendInvitationEmail,
   }
   const mergedSocial = defu(overrides.socialProviderOverrides ?? {}, socialProviders) as typeof socialProviders
+  // Guests short-circuit ahead of the override so a deployment that swaps in its
+  // own bootstrap (the SaaS layer does) still gets them named — and never runs
+  // org-membership bootstrap for an identity that can't be a member.
+  const bootstrap = overrides.userCreateAfter ?? bootstrapAfterUserCreate
+  const afterUserCreate = async (newUser: { id: string; email: string; isAnonymous?: boolean | null }) => {
+    if (newUser.isAnonymous) {
+      await nameGuestUser(newUser.id)
+      return
+    }
+    await bootstrap(newUser)
+  }
   return {
     database: drizzleAdapter(db, { provider: 'pg' }),
     emailAndPassword,
@@ -187,6 +221,16 @@ export function buildAuthConfig(overrides: AuthConfigOverrides = {}): BetterAuth
       // base64urlnopad HMAC, which a standard-base64 cookie value would not match.
       bearer(),
       admin(),
+      anonymous({
+        // Reserved by RFC 2606 — nobody can ever register it, so a stray email
+        // aimed at a guest can't land in someone's real inbox.
+        generateRandomEmail: () => `anon-${uuidv7()}@${GUEST_EMAIL_DOMAIN}`,
+        // Posts, votes and comments point at the guest's user id with no foreign
+        // key back to `user`, so the plugin's delete-on-sign-in would leave them
+        // pointing at a row that no longer exists. Claiming moves the content
+        // across and drops the row itself.
+        disableDeleteAnonymousUser: true,
+      }),
       organization(orgOpts),
       customSession(async ({ user, session }) => {
         const orgList = await loadOrgList(user.id)
@@ -207,7 +251,7 @@ export function buildAuthConfig(overrides: AuthConfigOverrides = {}): BetterAuth
     databaseHooks: {
       user: {
         create: {
-          after: overrides.userCreateAfter ?? bootstrapAfterUserCreate,
+          after: afterUserCreate,
         },
       },
     },

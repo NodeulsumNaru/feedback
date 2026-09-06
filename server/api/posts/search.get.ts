@@ -29,8 +29,7 @@ export default defineEventHandler(async (event) => {
   let rows
   if (embedding) {
     rows = await searchPostsBySemantic(embedding, {
-      orgId,
-      merged: 'canonical_only',
+      filter: { orgId, merged: 'canonical_only' },
       limit: PUBLIC_SEARCH_LIMIT,
     })
   }
@@ -52,6 +51,7 @@ export default defineEventHandler(async (event) => {
         authorId: post.authorId,
         authorName: user.name,
         authorImage: user.image,
+        authorIsAnonymous: user.isAnonymous,
         createdAt: post.createdAt,
       })
       .from(post)
@@ -84,7 +84,7 @@ export default defineEventHandler(async (event) => {
     commentCount: r.commentCount,
     mergedCount: r.mergedCount,
     hasVoted: votedPostIds.has(r.id),
-    author: { id: r.authorId, name: r.authorName, image: r.authorImage },
+    author: { id: r.authorId, name: r.authorName, image: r.authorImage, isAnonymous: !!r.authorIsAnonymous },
     createdAt: r.createdAt,
   }))
 

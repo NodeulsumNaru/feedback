@@ -15,9 +15,7 @@ const picked = reactive<Record<string, boolean>>({})
 const pickerOpen = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
 
-const { data: session } = useAuthSession()
-const isLoggedIn = computed(() => !!session.value?.user)
-const loginModal = useLoginModal()
+const { ensureIdentity } = useGuestSession()
 
 // Initialize picked state from userReactions
 for (const emoji of props.userReactions) {
@@ -33,9 +31,9 @@ const displayedReactions = computed(() =>
 )
 
 async function toggle(emoji: string) {
-  if (!isLoggedIn.value) {
+  if (!await ensureIdentity('allowVote')) {
     pickerOpen.value = false
-    return loginModal.open()
+    return
   }
 
   const wasActive = picked[emoji]
@@ -126,6 +124,8 @@ function handleDocumentClick(event: MouseEvent) {
         :class="picked[emoji]
           ? 'border-primary bg-primary/12 text-foreground ring-1 ring-primary/30'
           : 'border-border bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground active:bg-secondary/40'"
+        data-fdl-action="changelog_react"
+        data-fdl-source="chip"
         @click="toggle(emoji)"
       >
         <span class="leading-none select-none">{{ emoji }}</span>
@@ -145,6 +145,8 @@ function handleDocumentClick(event: MouseEvent) {
           class="inline-flex h-8 w-8 items-center justify-center rounded-md text-lg hover:bg-secondary/70 active:bg-secondary touch-manipulation transition-colors"
           :class="picked[emoji] ? 'bg-primary/12 text-foreground ring-1 ring-primary/35' : ''"
           :aria-label="$t('changelog.reactWith', { emoji })"
+          data-fdl-action="changelog_react"
+          data-fdl-source="picker"
           @click="toggleFromPicker(emoji)"
         >
           {{ emoji }}

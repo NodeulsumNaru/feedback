@@ -72,11 +72,15 @@ defineExpose({ clear })
             {{ $t('common.cancel') }}
           </Button>
           <div class="flex items-center">
+            <!-- Absent while editing: saving an edit is a different action, and
+                 this one button serves both. -->
             <Button
               variant="default"
               size="sm"
               :class="showNotify ? 'rounded-r-none' : ''"
               :disabled="submitDisabled"
+              :data-fdl-action="isEditing ? undefined : 'comment_submit'"
+              :data-fdl-source="isEditing ? undefined : (isReply ? 'reply' : 'post')"
               @click="handleSubmit"
             >
               {{ isEditing ? $t('common.save') : (isReply ? $t('post.comment.reply') : $t('post.comment.comment')) }}

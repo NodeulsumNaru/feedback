@@ -1,8 +1,10 @@
 import OpenAI from 'openai'
 import { asc, eq } from 'drizzle-orm'
-import { getRequestURL } from 'h3'
-import { board, organizationWidget } from '#layers/feedlog/server/db/schemas'
-import { buildWidgetSystemPrompt, parseWidgetAiResponse } from '#layers/feedlog/server/utils/widget-ai'
+import { board, conversation, message, organizationWidget } from '#layers/feedlog/server/db/schemas'
+import { buildWidgetSystemPrompt, historyToMessages, parseWidgetAiResponse, parseWidgetHistory } from '#layers/feedlog/server/utils/widget-ai'
+import { CONVERSATION_TOKEN_BUDGET, estimateTokens, isConversationId, ownedConversation } from '#layers/feedlog/server/utils/conversation'
+import type { WidgetAiOutput, WidgetHistoryTurn } from '#layers/feedlog/server/utils/widget-ai'
+import type { CreatedPost } from '#layers/feedlog/server/utils/post-create'
 import { isActorAdmin } from '#layers/feedlog/shared/utils/notifications'
 import { getEnabledRuleScenarios } from '#layers/feedlog/shared/utils/widget-settings'
 
@@ -13,8 +15,10 @@ const MAX_TEXT_LENGTH = 4000
 const RATE_LIMIT = { limit: 20, windowSeconds: 60 }
 
 interface WidgetMessageResponse {
-  type: 'feedback' | 'support' | 'unrecognized'
+  conversationId: string
+  type: 'feedback' | 'support' | 'clarify' | 'unrecognized'
   reply: string
+  conversationTitle?: string
   post?: {
     id: string
     slug: string
@@ -26,13 +30,22 @@ interface WidgetMessageResponse {
 
 export default defineEventHandler(async (event): Promise<WidgetMessageResponse> => {
   const { session, orgId } = await requireAuthInOrg(event)
+  // Everything a visitor does in the widget ends in a post, so guest posting is
+  // what decides whether the widget works at all without a sign-in.
+  await assertGuestMay(event, session, 'allowPost')
+  const userId = session.user.id
 
-  const ip = getRequestIP(event, { xForwardedFor: true }) || 'unknown'
-  if (!await checkRateLimit(`widget-messages:${ip}`, RATE_LIMIT)) {
+  if (!await checkRateLimit(`widget-messages:${userId}`, RATE_LIMIT)) {
     throw createError({ statusCode: 429, message: 'Too many messages, try again shortly' })
   }
 
-  const body = await readBody<{ text?: unknown; images?: unknown }>(event).catch(() => null)
+  const body = await readBody<{
+    text?: unknown
+    images?: unknown
+    conversationId?: unknown
+    history?: unknown
+  }>(event).catch(() => null)
+
   const text = typeof body?.text === 'string' ? body.text.trim() : ''
   const images = Array.isArray(body?.images)
     ? body.images.filter((k): k is string => typeof k === 'string' && !!k)
@@ -42,6 +55,29 @@ export default defineEventHandler(async (event): Promise<WidgetMessageResponse> 
   }
   if (text.length > MAX_TEXT_LENGTH) {
     throw createError({ statusCode: 422, message: 'Message is too long' })
+  }
+
+  const history = parseWidgetHistory(body?.history)
+  if (!history) {
+    throw createError({ statusCode: 422, message: 'Malformed conversation history' })
+  }
+
+  // Judged before anything is written or sent upstream, so a full conversation
+  // costs neither a row to roll back nor a call to pay for.
+  const budget = history.reduce((n, h) => n + estimateTokens(h.text), estimateTokens(text))
+  if (budget >= CONVERSATION_TOKEN_BUDGET) {
+    throw createError({
+      statusCode: 409,
+      message: 'This conversation is full',
+      data: { code: 'conversation_full' },
+    })
+  }
+
+  const rawId = body?.conversationId
+  const requestedId = isConversationId(rawId) ? rawId : null
+  // A malformed id names a conversation that cannot exist, not a new one.
+  if (rawId && !requestedId) {
+    throw createError({ statusCode: 404, message: 'Conversation not found' })
   }
 
   const db = useDB()
@@ -59,6 +95,20 @@ export default defineEventHandler(async (event): Promise<WidgetMessageResponse> 
   // No row = never configured = defaults, which enable the widget.
   if (!(widgetRow?.enabled ?? true)) {
     throw createError({ statusCode: 403, message: 'Widget is not enabled for this organization' })
+  }
+
+  // A conversation belongs to the one visitor who started it, in that one org.
+  let needsTitle = true
+  if (requestedId) {
+    const [owned] = await db
+      .select({ title: conversation.title })
+      .from(conversation)
+      .where(ownedConversation(requestedId, orgId, userId))
+      .limit(1)
+    if (!owned) {
+      throw createError({ statusCode: 404, message: 'Conversation not found' })
+    }
+    needsTitle = owned.title === null
   }
 
   const boards = await db
@@ -79,17 +129,57 @@ export default defineEventHandler(async (event): Promise<WidgetMessageResponse> 
     orgInfo?.name || 'this product',
     boards.map(b => ({ name: b.name, description: b.description })),
     getEnabledRuleScenarios(widgetRow ?? null),
+    needsTitle,
   )
+
+  // Stored before the model is asked anything: a failed call then leaves an
+  // unanswered message, where writing afterwards would lose what they typed.
+  const sentAt = new Date()
+  const { conversationId, userMessageId } = await db.transaction(async (tx) => {
+    let id = requestedId
+    if (id) {
+      await tx.update(conversation)
+        .set({ previewText: text, lastMessageAt: sentAt })
+        .where(eq(conversation.id, id))
+    }
+    else {
+      const [row] = await tx.insert(conversation)
+        .values({ orgId, userId, previewText: text, lastMessageAt: sentAt })
+        .returning({ id: conversation.id })
+      id = row!.id
+    }
+    const [userMessage] = await tx.insert(message)
+      .values({ conversationId: id, role: 'user', text, images })
+      .returning({ id: message.id })
+    return { conversationId: id, userMessageId: userMessage!.id }
+  })
+
+  // Published only now that the transaction has committed: an event about a
+  // rolled-back row would tell listeners of a fact that does not exist. The
+  // user message id ties together every event of this message's flow.
+  publishDomainEvent(event, createDomainEvent({
+    name: 'widget.message-received',
+    orgId,
+    userId,
+    data: {
+      conversationId,
+      messageId: userMessageId,
+      isNewConversation: !requestedId,
+      attachmentCount: images.length,
+    },
+  }))
 
   // Images are attached to the post but never sent to the model: extraction is
   // text-only for now, so a screenshot-only message is unrecognized by design.
-  let parsed
+  let parsed: WidgetAiOutput | null = null
+  let resolutionSource: 'model' | 'policy-fallback' = 'model'
   try {
     const client = new OpenAI({ apiKey, baseURL })
     const resp = await client.chat.completions.create({
       model,
       messages: [
         { role: 'system', content: systemPrompt },
+        ...historyToMessages(history),
         { role: 'user', content: text || '(no text, image only)' },
       ],
       // Extraction should be reproducible; creative variation only costs accuracy.
@@ -101,76 +191,133 @@ export default defineEventHandler(async (event): Promise<WidgetMessageResponse> 
   catch (err: unknown) {
     // The upstream gateway fronts Azure OpenAI, whose content filter rejects some
     // inputs with a 400. That is permanent — retrying sends the same text — so it
-    // degrades to the same dead end as an unusable message rather than the 502
-    // the SDK would keep retrying.
-    if ((err as { status?: number })?.status === 400) {
-      return { type: 'unrecognized', reply: unrecognizedReply() }
+    // degrades to the same dead end as an unusable message. Any other 400 is a
+    // fault in the request we built, which the visitor cannot act on.
+    const status = (err as { status?: number })?.status
+    const code = (err as { code?: string })?.code
+    if (status === 400 && code === 'content_filter') {
+      parsed = { type: 'unrecognized' }
+      resolutionSource = 'policy-fallback'
     }
-    const message = err instanceof Error ? err.message : 'Unknown AI error'
-    throw createError({ statusCode: 502, message: `AI extraction failed: ${message}` })
+    else {
+      publishDomainEvent(event, createDomainEvent({
+        name: 'widget.message-processing-failed',
+        orgId,
+        userId,
+        data: { conversationId, messageId: userMessageId, reason: 'provider-error' },
+      }))
+      const detail = err instanceof Error ? err.message : 'Unknown AI error'
+      throw createError({ statusCode: 502, message: `AI extraction failed: ${detail}` })
+    }
   }
 
   // A malformed response is a transient model failure — the SDK may retry.
   if (!parsed) {
+    publishDomainEvent(event, createDomainEvent({
+      name: 'widget.message-processing-failed',
+      orgId,
+      userId,
+      data: { conversationId, messageId: userMessageId, reason: 'invalid-output' },
+    }))
     throw createError({ statusCode: 502, message: 'AI returned an unusable response' })
   }
+  const ai = parsed
 
   // Written here rather than by the model, so they have to follow the message
   // themselves. The frame's locale is no help — it renders English either way.
   const zh = HAN.test(text)
 
-  if (parsed.type === 'support') {
-    return { type: 'support', reply: supportReply(widgetRow?.supportEmail ?? null, zh) }
-  }
-  if (parsed.type === 'unrecognized') {
-    return { type: 'unrecognized', reply: unrecognizedReply(orgInfo?.name || (zh ? '这个产品' : 'this product'), zh) }
-  }
-
   // The model picks a board by NAME — it cannot reliably copy a uuid. Resolve it
   // here and fall back to the first board so a miss never blocks the post.
-  const matched = boards.find(b => b.name.toLowerCase() === parsed.boardName?.toLowerCase())
-  const boardRow = matched ?? boards[0] ?? null
+  const boardRow = ai.type === 'feedback'
+    ? (boards.find(b => b.name.toLowerCase() === ai.boardName?.toLowerCase()) ?? boards[0] ?? null)
+    : null
+  const content = ai.type === 'feedback' ? appendImages(ai.content!, images) : ''
 
-  const content = appendImages(parsed.content!, images)
-  const created = await createPostRecord({
-    orgId,
-    authorId: session.user.id,
-    title: truncateTitle(parsed.title!),
-    content,
-    boardId: boardRow?.id ?? null,
-    subscribeAuthor: !isActorAdmin(session, orgId),
+  let reply: string
+  if (ai.type === 'support') {
+    reply = supportReply(widgetRow?.supportEmail ?? null, zh)
+  }
+  else if (ai.type === 'unrecognized') {
+    reply = unrecognizedReply(orgInfo?.name || (zh ? '这个产品' : 'this product'), zh)
+  }
+  else if (ai.type === 'clarify') {
+    reply = ai.reply!.trim()
+  }
+  else {
+    reply = ai.reply?.trim() || 'Thanks — I turned that into a feedback post for you.'
+  }
+
+  const nextTitle = needsTitle && ai.type !== 'clarify'
+    ? (truncateTitle(ai.conversationTitle?.trim() || fallbackTitle(history, text)) || null)
+    : null
+
+  // The post and the reply that announces it commit together: a post no
+  // conversation points at is unreachable from the widget.
+  const created = await db.transaction(async (tx) => {
+    const post = ai.type === 'feedback'
+      ? await createPostRecord({
+          orgId,
+          authorId: userId,
+          title: truncateTitle(ai.title!),
+          content,
+          boardId: boardRow?.id ?? null,
+          subscribeAuthor: !isActorAdmin(session, orgId),
+        }, tx)
+      : null
+    await tx.insert(message).values({
+      conversationId,
+      role: 'assistant',
+      kind: ai.type,
+      text: reply,
+      postId: post?.id ?? null,
+    })
+    await tx.update(conversation)
+      .set({
+        previewText: reply,
+        lastMessageAt: new Date(),
+        unread: true,
+        ...(nextTitle ? { title: nextTitle } : {}),
+      })
+      .where(eq(conversation.id, conversationId))
+    return post
   })
 
-  event.waitUntil(
-    generatePostEmbedding(created.id, orgId, created.title, content, created.contentHash),
-  )
-
-  if (!isActorAdmin(session, orgId)) {
-    event.waitUntil(
-      emitAdminNotification({
-        orgId,
-        typeKey: 'post.created',
-        postSlug: created.slug,
-        postTitle: created.title,
-        snippet: content,
-        actorId: session.user.id,
-        requestOrigin: getRequestURL(event).origin,
-      }).catch((err: unknown) => console.error('[notifications] widget post created emit failed', err)),
-    )
+  // Published after the transaction resolves, never inside it — the assistant
+  // row (and the post, when there is one) must exist before listeners are told.
+  publishDomainEvent(event, createDomainEvent({
+    name: 'widget.message-resolved',
+    orgId,
+    userId,
+    data: { conversationId, messageId: userMessageId, outcome: ai.type, resolutionSource },
+  }))
+  if (created) {
+    publishDomainEvent(event, createDomainEvent({
+      name: 'feedback.created',
+      orgId,
+      userId,
+      data: { feedbackId: created.id, boardId: created.boardId, source: 'widget', messageId: userMessageId },
+    }))
   }
 
   return {
-    type: 'feedback',
-    reply: parsed.reply?.trim() || 'Thanks — I turned that into a feedback post for you.',
-    post: {
-      id: created.id,
-      slug: created.slug,
-      title: created.title,
-      board: boardRow?.name ?? null,
-      status: created.status,
-    },
+    conversationId,
+    type: ai.type,
+    reply,
+    ...(nextTitle ? { conversationTitle: nextTitle } : {}),
+    ...(created ? { post: postSummary(created, boardRow?.name ?? null) } : {}),
   }
 })
+
+function postSummary(created: CreatedPost, boardName: string | null) {
+  return {
+    id: created.id,
+    slug: created.slug,
+    title: created.title,
+    board: boardName,
+    status: created.status,
+  }
+}
 
 // Server-composed so the mailto and the wording can't drift with the model. With
 // no support email configured the user is still pointed at support, just without
@@ -185,6 +332,14 @@ const TITLE_MAX = 200
 function truncateTitle(title: string): string {
   const chars = Array.from(title)
   return chars.length > TITLE_MAX ? chars.slice(0, TITLE_MAX).join('') : title
+}
+
+// history is the client's copy: a wrong opening message costs only a label.
+const CONVERSATION_TITLE_CHARS = 20
+function fallbackTitle(history: WidgetHistoryTurn[], current: string): string {
+  const first = history.find(h => h.role === 'user')?.text || current
+  const chars = Array.from(first)
+  return chars.length > CONVERSATION_TITLE_CHARS ? chars.slice(0, CONVERSATION_TITLE_CHARS).join('') : first
 }
 
 // No email configured still guides the visitor to support, just without one to

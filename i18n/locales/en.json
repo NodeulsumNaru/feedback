@@ -17,6 +17,7 @@
     "delete": "Delete",
     "save": "Save",
     "anonymous": "Anonymous",
+    "guest": "Guest {tag}",
     "theme": {
       "label": "Theme",
       "auto": "Auto",
@@ -202,6 +203,11 @@
       "signInAndSubmit": "Sign in & Post",
       "dialogTitle": "Submit Feedback",
       "dialogDescription": "Submit new feedback",
+      "guestHint": {
+        "before": "Posting as a guest. ",
+        "link": "Sign in",
+        "after": " to get notified when someone replies."
+      },
       "errors": {
         "selectBoard": "Please select a board",
         "titleRequired": "Title is required",
@@ -430,7 +436,26 @@
     "filter": {
       "status": "Status",
       "board": "Board",
-      "merged": "Merged"
+      "merged": "Merged",
+      "author": "Author",
+      "created": "Created",
+      "noBoard": "No board",
+      "staleValue": "Unavailable",
+      "noFieldsLeft": "No filters left",
+      "noMatches": "No matches",
+      "pickDate": "Pick a date",
+      "pickValue": "Pick a value",
+      "searchPlaceholder": "Search",
+      "last7": "Last 7 days",
+      "last30": "Last 30 days",
+      "thisQuarter": "This quarter",
+      "op": {
+        "is": "Is",
+        "not": "Is not",
+        "before": "Before",
+        "after": "After",
+        "range": "Between"
+      }
     },
     "nav": {
       "srTitle": "Navigation",
@@ -487,7 +512,10 @@
       "entriesShort": "{total} entries",
       "searchPlaceholder": "Search feedback…",
       "searchAria": "Search feedback",
-      "clearSearch": "Clear search"
+      "clearSearch": "Clear search",
+      "clearAllFilters": "Clear all filters",
+      "quickFilters": "Quick filters",
+      "statuses": "Statuses"
     },
     "sso": {
       "title": "Single Sign-On",
@@ -591,6 +619,24 @@
         "dark": "Dark"
       }
     },
+    "guest": {
+      "title": "Guest actions",
+      "subtitle": "What visitors can do without signing in.",
+      "allowPost": {
+        "title": "Guest posting",
+        "desc": "Let visitors submit feedback without signing in.",
+        "note": "Also lets the embedded widget be used without signing in."
+      },
+      "allowVote": {
+        "title": "Guest voting",
+        "desc": "Let visitors upvote posts without signing in."
+      },
+      "allowComment": {
+        "title": "Guest commenting",
+        "desc": "Let visitors comment on other people's posts without signing in."
+      },
+      "saveFailed": "Failed to save guest actions."
+    },
     "portal": {
       "title": "Portal",
       "subtitle": "Content shown on your public feedback portal",
@@ -674,6 +720,10 @@
       "emailLabel": "Support email",
       "emailPlaceholder": "support{'@'}example.com",
       "emailHint": "Without an address the assistant still suggests contacting support, just without naming one.",
+      "retentionLabel": "Conversation history",
+      "retentionUnit": "days",
+      "retentionHint": "How long visitors can still see their past conversations in the widget. Older ones stop showing; nothing is deleted.",
+      "retentionRange": "Enter a number between {min} and {max} days.",
       "save": "Save",
       "rulesLabel": "Rules",
       "rulesHint": "Each enabled rule is added to the assistant instructions verbatim.",
@@ -705,8 +755,6 @@
   "widget": {
     "title": "Feedback",
     "subtitle": "Help us make {product} better — share problems and ideas",
-    "allFeedback": "All feedback",
-    "seeOthers": "See what others have suggested",
     "thisProduct": "this product",
     "greeting": "Hi, I'm the feedback assistant — an AI, not a human agent 👋 Describe what's broken or missing, and I'll file it for the {product} team.",
     "placeholder": "Describe a problem or share an idea…",
@@ -728,6 +776,18 @@
     "loadFailed": "Could not load your feedback.",
     "attachImage": "Attach image",
     "uploadFailed": "Could not upload that image. Please try again.",
-    "uploadTooLarge": "Images must be smaller than {size}MB."
+    "uploadTooLarge": "Images must be smaller than {size}MB.",
+    "messages": "Messages",
+    "agentTitle": "Feedback Agent",
+    "newConversation": "Send us a message",
+    "newBadge": "{count} new",
+    "timeAgoMinute": "{n}m",
+    "timeAgoHour": "{n}h",
+    "timeAgoDay": "{n}d",
+    "timeAgoWeek": "{n}w",
+    "timeAgoMonth": "{n}mo",
+    "conversationFullNote": "This conversation has reached its length limit. Your next message starts a new one.",
+    "conversationFullTitle": "This conversation is full",
+    "startNewConversation": "Start a new conversation"
   }
 }

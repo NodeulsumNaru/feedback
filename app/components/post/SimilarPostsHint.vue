@@ -43,6 +43,7 @@ function statusConfig(status: string) {
     <!-- Header (toggle) -->
     <button
       class="w-full flex items-center justify-between cursor-pointer select-none px-3.5 py-2.5"
+      data-fdl-action="similar_feedback_open"
       @click="expanded = !expanded"
     >
       <div class="flex items-center gap-2 text-primary">
@@ -73,6 +74,8 @@ function statusConfig(status: string) {
         v-for="sp in similarPosts"
         :key="sp.id"
         class="group cursor-pointer flex flex-col justify-center py-2 px-3.5 hover:bg-secondary/40 transition-colors"
+        data-fdl-action="feedback_open"
+        data-fdl-source="similar-list"
         @click="emit('select', sp)"
       >
         <div class="flex items-center justify-between gap-3">

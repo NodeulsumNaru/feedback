@@ -187,42 +187,46 @@ const developerOpen = ref(developerNav.value.some(item => route.path.startsWith(
     </Sheet>
 
     <!-- Desktop Sidebar -->
-    <aside class="hidden md:flex w-[260px] h-full shrink-0 border-r border-border bg-card flex-col">
-      <DashboardSidebarBrand />
-      <DashboardSidebarTop />
+    <aside class="hidden md:flex w-16 min-[1360px]:w-[260px] h-full shrink-0 border-r border-border bg-card flex-col">
+      <div class="hidden min-[1360px]:block">
+        <DashboardSidebarBrand />
+        <DashboardSidebarTop />
+      </div>
 
       <!-- Navigation -->
-      <nav class="flex-1 px-4 space-y-8 overflow-y-auto">
+      <nav class="flex-1 px-2 min-[1360px]:px-4 pt-4 min-[1360px]:pt-0 space-y-8 overflow-y-auto">
         <!-- Main -->
         <div>
-          <p class="px-3 mb-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('dashboard.nav.main') }}</p>
+          <p class="hidden min-[1360px]:block px-3 mb-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('dashboard.nav.main') }}</p>
           <div class="space-y-1">
             <NuxtLink
               v-for="item in mainNav"
               :key="item.to"
               :to="localePath(item.to)"
-              class="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:bg-background hover:text-foreground transition-colors font-semibold"
+              class="flex items-center gap-3 py-2 rounded-lg justify-center min-[1360px]:justify-start px-0 min-[1360px]:px-3 text-muted-foreground hover:bg-background hover:text-foreground transition-colors font-semibold"
+              :title="item.label"
               active-class="!bg-secondary !text-primary !font-bold"
             >
-              <Icon :name="item.icon" size="20" />
-              <span class="text-sm">{{ item.label }}</span>
+              <Icon :name="item.icon" size="20" class="shrink-0" />
+              <span class="hidden min-[1360px]:inline text-sm">{{ item.label }}</span>
             </NuxtLink>
           </div>
         </div>
 
         <!-- Settings -->
         <div>
-          <p class="px-3 mb-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('dashboard.nav.settings') }}</p>
+          <p class="hidden min-[1360px]:block px-3 mb-2 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('dashboard.nav.settings') }}</p>
           <div class="space-y-1">
             <NuxtLink
               v-for="item in settingsNav"
               :key="item.to"
               :to="localePath(item.to)"
-              class="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:bg-background hover:text-foreground transition-colors font-semibold"
+              class="flex items-center gap-3 py-2 rounded-lg justify-center min-[1360px]:justify-start px-0 min-[1360px]:px-3 text-muted-foreground hover:bg-background hover:text-foreground transition-colors font-semibold"
+              :title="item.label"
               active-class="!bg-secondary !text-primary !font-bold"
             >
-              <Icon :name="item.icon" size="20" />
-              <span class="text-sm">{{ item.label }}</span>
+              <Icon :name="item.icon" size="20" class="shrink-0" />
+              <span class="hidden min-[1360px]:inline text-sm">{{ item.label }}</span>
             </NuxtLink>
           </div>
         </div>
@@ -230,7 +234,7 @@ const developerOpen = ref(developerNav.value.some(item => route.path.startsWith(
         <!-- Developer (collapsible, collapsed by default) -->
         <div v-if="developerNav.length">
           <button
-            class="w-full flex items-center justify-between px-3 mb-2 group"
+            class="hidden min-[1360px]:flex w-full items-center justify-between px-3 mb-2 group"
             @click="developerOpen = !developerOpen"
           >
             <span class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">{{ $t('dashboard.nav.developer') }}</span>
@@ -240,37 +244,37 @@ const developerOpen = ref(developerNav.value.some(item => route.path.startsWith(
               class="text-muted-foreground"
             />
           </button>
-          <div v-show="developerOpen" class="space-y-1">
+          <div class="space-y-1" :class="developerOpen ? '' : 'min-[1360px]:hidden'">
             <NuxtLink
               v-for="item in developerNav"
               :key="item.to"
               :to="localePath(item.to)"
-              class="flex items-center gap-3 px-3 py-2 rounded-lg text-muted-foreground hover:bg-background hover:text-foreground transition-colors font-semibold"
+              class="flex items-center gap-3 py-2 rounded-lg justify-center min-[1360px]:justify-start px-0 min-[1360px]:px-3 text-muted-foreground hover:bg-background hover:text-foreground transition-colors font-semibold"
+              :title="item.label"
               active-class="!bg-secondary !text-primary !font-bold"
             >
-              <Icon :name="item.icon" size="20" />
-              <span class="text-sm">{{ item.label }}</span>
+              <Icon :name="item.icon" size="20" class="shrink-0" />
+              <span class="hidden min-[1360px]:inline text-sm">{{ item.label }}</span>
             </NuxtLink>
           </div>
         </div>
       </nav>
 
       <!-- User info (bottom) -->
-      <div class="h-16 px-4 border-t border-border flex items-center gap-1">
+      <div class="border-t border-border flex items-center flex-col min-[1360px]:flex-row gap-1 py-3 min-[1360px]:py-0 px-1 min-[1360px]:px-4 min-[1360px]:h-16">
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
-            <button class="flex items-center gap-3 flex-1 min-w-0 p-2 rounded-xl hover:bg-background transition-colors">
+            <button class="flex items-center gap-3 rounded-xl hover:bg-background transition-colors p-1.5 min-[1360px]:flex-1 min-[1360px]:min-w-0 min-[1360px]:p-2">
               <Avatar class="w-8 h-8 shrink-0">
                 <img v-if="user?.image && !avatarError" :src="user.image" :alt="user?.name" class="aspect-square size-full rounded-full object-cover" referrerpolicy="no-referrer" @error="avatarError = true">
                 <AvatarFallback v-else class="bg-accent text-accent-foreground text-sm font-bold">
                   {{ initials }}
                 </AvatarFallback>
               </Avatar>
-              <div class="flex-1 text-left">
+              <div class="hidden min-[1360px]:block flex-1 text-left">
                 <p class="text-xs font-bold truncate">{{ user?.name }}</p>
                 <p class="text-[10px] text-muted-foreground truncate">{{ user?.email }}</p>
               </div>
-              <Icon name="lucide:chevron-up" size="16" class="text-muted-foreground" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="top" class="w-[228px]">

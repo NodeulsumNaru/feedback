@@ -1,11 +1,9 @@
-import { and, eq, isNull, isNotNull, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
+import type { PostFilter } from '#layers/feedlog/server/utils/postFilterConditions'
 import { post, postEmbedding, user } from '#layers/feedlog/server/db/schemas'
 
 export interface SemanticOpts {
-  orgId: string
-  boardId?: string
-  status?: string
-  merged?: 'canonical_only' | 'merged_only' | 'all'
+  filter: PostFilter
   maxDistance?: number // cosine-distance cutoff (public threshold); omit = no cutoff
   limit: number
 }
@@ -18,12 +16,7 @@ export async function searchPostsBySemantic(embedding: number[], opts: SemanticO
   const vec = `[${embedding.join(',')}]`
   const distance = sql`${postEmbedding.embedding} <=> ${vec}::vector`
 
-  const conditions = [eq(post.orgId, opts.orgId)]
-  if (opts.merged === 'merged_only') conditions.push(isNotNull(post.mergedTo))
-  else if (opts.merged === 'all') { /* include both — no mergedTo filter */ }
-  else conditions.push(isNull(post.mergedTo)) // default + canonical_only
-  if (opts.boardId) conditions.push(eq(post.boardId, opts.boardId))
-  if (opts.status) conditions.push(eq(post.status, opts.status))
+  const conditions = postFilterConditions(opts.filter)
   if (opts.maxDistance != null) conditions.push(sql`${distance} <= ${opts.maxDistance}`)
 
   return db
@@ -40,6 +33,7 @@ export async function searchPostsBySemantic(embedding: number[], opts: SemanticO
       authorId: post.authorId,
       authorName: user.name,
       authorImage: user.image,
+      authorIsAnonymous: user.isAnonymous,
       createdAt: post.createdAt,
     })
     .from(post)
