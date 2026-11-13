@@ -4,8 +4,17 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { HELP_COLLECTION_ICONS } from './shared/constants/help'
+import { deferToWrangler, syncBuiltinAliasesToWrangler } from './scripts/defer-to-wrangler'
 
 const resolver = createResolver(import.meta.url)
+// NITRO_PRESET이 없어도 Cloudflare Workers Builds 안(WORKERS_CI=1)이면 Nitro가
+// cloudflare 프리셋을 자동 선택하므로 같이 취급
+const isCloudflare = !!process.env.NITRO_PRESET?.startsWith('cloudflare') || process.env.WORKERS_CI === '1'
+// pg 등이 wrangler(esbuild)로 번들될 때도 Nitro alias와 같은 대체를 쓰도록 공유
+const workerStubs = {
+  'pg-native': resolver.resolve('./server/lib/agent/pg-native-unavailable.cjs'),
+  'debug': resolver.resolve('./server/lib/debug-unavailable.cjs'),
+}
 const require = createRequire(import.meta.url)
 const mastraPackage = require.resolve('@mastra/core/package.json')
 const mastraRequire = createRequire(mastraPackage)
@@ -41,6 +50,15 @@ export default defineNuxtConfig({
   // runs don't break and the layer's identity isn't tied to a particular
   // directory name.
   $meta: { name: 'feedlog' },
+
+  // 저메모리 빌드(scripts/build-low-memory.mjs) 지원.
+  // Vite(client/server) 빌드가 끝난 뒤에도 ~1.3GB 힙이 해제되지 않은 채로 Nitro
+  // 번들링이 같은 프로세스에서 이어져서 피크 메모리가 4~6GB까지 올라감.
+  // buildCache로 Vite 결과물(.nuxt)을 캐시해두면 두 번째 프로세스는 Vite를 건너뛰고
+  // Nitro만 빌드하므로, 두 단계를 별도 프로세스로 나눠 각 단계 피크를 낮춤.
+  experimental: {
+    buildCache: process.env.NUXT_LOW_MEMORY_BUILD === '1',
+  },
 
   compatibilityDate: '2025-07-15',
   // devtools는 로컬 개발용이라 배포 빌드엔 필요 없음. @nuxthub/core의 devtools
@@ -198,6 +216,7 @@ export default defineNuxtConfig({
       // before Nitro can resolve the flattened import to the ESM-only version.
       noExternal: ['nanoid'],
     },
+    build: isCloudflare ? { rollupOptions: { cache: false, maxParallelFileOps: 8 } } : {},
   },
 
   nitro: {
@@ -206,7 +225,7 @@ export default defineNuxtConfig({
       traceAlias: mastraTraceAlias,
     },
     // Mastra's hashing dependency ships a native Wasm module for Workers.
-    experimental: { wasm: true, tasks: true },
+    experimental: { wasm: true, tasks: true, legacyExternals: true },
     tasks: {
       'inbox:schedule': { handler: resolver.resolve('./server/tasks/inbox/schedule.ts') },
     },
@@ -216,10 +235,9 @@ export default defineNuxtConfig({
     },
     vercel: { functions: { experimentalTriggers: [{ type: 'queue/v2beta', topic: 'feedlog-inbox', retryAfterSeconds: 60 }] } },
     // Workers use pg's JavaScript client; its optional native addon is Node-only.
-    alias: process.env.NITRO_PRESET?.startsWith('cloudflare')
+    alias: isCloudflare
       ? {
-          'pg-native': resolver.resolve('./server/lib/agent/pg-native-unavailable.cjs'),
-          'debug': resolver.resolve('./server/lib/debug-unavailable.cjs'),
+          ...workerStubs,
           '@vercel/queue': resolver.resolve('./server/lib/inbox/vercel-queue-unavailable.ts'),
         }
       : {},
@@ -230,18 +248,31 @@ export default defineNuxtConfig({
     unenv: {
       external: ['node:fs', 'node:fs/promises', 'node:path', 'node:process'],
     },
-    // 빌드 메모리 절약용 설정. 이것만으로는 Cloudflare Workers Builds의
-    // 메모리 한도(~2GB) 안에 못 들어가서(실측 피크 ~4GB), 실제 배포는
-    // .github/workflows/deploy.yml(GitHub Actions 러너)에서 빌드함.
-    // - legacyExternals: Nitro 기본 node-externals 플러그인의 캐싱 버그
-    //   (nitrojs/nitro#2369)로 모듈 해석이 반복되며 메모리가 불어나는 것 완화
-    // - minify/sourceMap 끔: 압축·소스맵 생성 메모리 절약
-    experimental: {
-      legacyExternals: true,
+    // 압축은 Nitro(Rollup+terser) 대신 wrangler(esbuild)에서 → 빌드 메모리 절약
+    minify: !isCloudflare,
+    sourceMap: isCloudflare ? false : undefined,
+    // 빌드 메모리 절감 (자세한 설명은 scripts/defer-to-wrangler.ts, scripts/build-low-memory.mjs)
+    // - cache: false → Rollup이 모든 모듈의 ESTree AST를 끝까지 들고 있지 않게 함
+    // - maxParallelFileOps → 동시에 읽어 들이는 파일 수 제한
+    // - Cloudflare에서는 무거운 의존성 번들을 wrangler(esbuild)로 넘김
+    rollupConfig: isCloudflare
+      ? { cache: false, maxParallelFileOps: 8, plugins: [deferToWrangler()] }
+      : {},
+    cloudflare: {
+      // deferToWrangler로 넘긴 패키지(pg 등) 안쪽 import에도 같은 대체 적용
+      // 압축도 wrangler(esbuild)가 담당 (Nitro minify를 끈 대신)
+      wrangler: { alias: workerStubs, minify: true },
     },
-    minify: false,
-    sourceMap: false,
+    hooks: {
+      'rollup:before': async (nitro) => {
+        // 1단계(Vite) 프로세스는 캐시 저장까지만 하고 종료 → Nitro는 새 프로세스에서
+        if (process.env.NUXT_LOW_MEMORY_BUILD_PHASE === 'vite') process.exit(0)
+        if (isCloudflare) await syncBuiltinAliasesToWrangler(nitro)
+      },
+    },
   },
+
+  sourcemap: isCloudflare ? { server: false, client: false } : undefined,
 
   ogImage: {
     enabled: false,

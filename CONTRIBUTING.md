@@ -56,7 +56,7 @@ pnpm dev        # http://localhost:3000
 | `pnpm preview` | Preview the production build locally |
 | `pnpm generate:migration` | Generate a Drizzle migration after schema changes |
 | `pnpm migrate` | Apply pending migrations |
-| `pnpm build:cf` | Production build for Cloudflare Workers preset |
+| `pnpm build:cf` | Production build for Cloudflare Workers preset (low-memory, ~2 GB peak) |
 | `pnpm deploy:cf` | Deploy the CF build via wrangler |
 
 ### Project layout

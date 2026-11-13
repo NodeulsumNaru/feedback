@@ -28,7 +28,7 @@ pnpm generate:migration         # Generate Drizzle migration after schema change
 pnpm migrate                    # Run database migrations
 
 # Cloudflare Workers deployment
-pnpm build:cf                   # Build with NITRO_PRESET=cloudflare-module
+pnpm build:cf                   # Low-memory 2-phase build with NITRO_PRESET=cloudflare-module (scripts/build-low-memory.mjs)
 pnpm deploy:cf                  # Deploy .output to CF Workers via wrangler
 
 # UI components
