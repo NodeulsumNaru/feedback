@@ -5,6 +5,7 @@ import {
   comment,
   commentLike,
   conversation,
+  conversationItem,
   post,
   postSubscription,
   postUnread,
@@ -122,6 +123,8 @@ export async function claimGuestContent(
       .set({ userId: targetUserId })
       .where(eq(conversation.userId, anonUserId))
       .returning({ id: conversation.id })
+
+    await tx.update(conversationItem).set({ authorUserId: targetUserId }).where(eq(conversationItem.authorUserId, anonUserId))
 
     await tx.update(postSubscription).set({ userId: targetUserId }).where(eq(postSubscription.userId, anonUserId))
     await tx.update(postUnread).set({ userId: targetUserId }).where(eq(postUnread.userId, anonUserId))

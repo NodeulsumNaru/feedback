@@ -1,6 +1,11 @@
 import { z } from 'zod/v4'
 import { CONVERSATION_RETENTION_MAX_DAYS, CONVERSATION_RETENTION_MIN_DAYS } from '../constants/conversation'
 import { WIDGET_BUILTIN_RULE_IDS, WIDGET_MAX_ENABLED_RULES, WIDGET_MAX_RULE_LENGTH } from '../constants/widget-rules'
+import {
+  WIDGET_LAUNCHER_ALIGNMENTS,
+  WIDGET_LAUNCHER_CLOSE_BEHAVIORS,
+  WIDGET_LAUNCHER_OFFSET_MIN,
+} from '../constants/widget-launcher'
 
 // Handoff rule text goes into the AI system prompt verbatim, so the limits are
 // enforced here rather than in the UI alone.
@@ -11,6 +16,15 @@ const customRuleSchema = z.object({
     .min(1, 'Rule cannot be empty')
     .max(WIDGET_MAX_RULE_LENGTH, `Rule must be ${WIDGET_MAX_RULE_LENGTH} characters or less`),
   enabled: z.boolean(),
+})
+
+export const widgetLauncherConfigSchema = z.object({
+  alignment: z.enum(WIDGET_LAUNCHER_ALIGNMENTS),
+  bottomOffset: z.int('Offset must be a whole number of pixels')
+    .min(WIDGET_LAUNCHER_OFFSET_MIN, `Offset must be at least ${WIDGET_LAUNCHER_OFFSET_MIN}px`),
+  sideOffset: z.int('Offset must be a whole number of pixels')
+    .min(WIDGET_LAUNCHER_OFFSET_MIN, `Offset must be at least ${WIDGET_LAUNCHER_OFFSET_MIN}px`),
+  closeBehavior: z.enum(WIDGET_LAUNCHER_CLOSE_BEHAVIORS),
 })
 
 export const updateWidgetSettingsSchema = z.object({
@@ -24,6 +38,7 @@ export const updateWidgetSettingsSchema = z.object({
     .min(CONVERSATION_RETENTION_MIN_DAYS, `Retention must be at least ${CONVERSATION_RETENTION_MIN_DAYS} days`)
     .max(CONVERSATION_RETENTION_MAX_DAYS, `Retention must be ${CONVERSATION_RETENTION_MAX_DAYS} days or less`)
     .optional(),
+  launcherConfig: widgetLauncherConfigSchema.optional(),
 })
 
 export type UpdateWidgetSettingsInput = z.infer<typeof updateWidgetSettingsSchema>

@@ -1,426 +1,529 @@
 <script setup lang="ts">
 import { toast } from 'vue-sonner'
-import {
-  CONVERSATION_RETENTION_DEFAULT_DAYS,
-  CONVERSATION_RETENTION_MAX_DAYS,
-  CONVERSATION_RETENTION_MIN_DAYS,
-} from '~~/shared/constants/conversation'
-import { WIDGET_MAX_ENABLED_RULES } from '~~/shared/constants/widget-rules'
-
-// /dashboard/settings/widget — install guide + the rules that decide when the
-// in-widget assistant points a visitor at support instead of filing feedback.
+import { CONVERSATION_RETENTION_DEFAULT_DAYS, CONVERSATION_RETENTION_MAX_DAYS, CONVERSATION_RETENTION_MIN_DAYS } from '#layers/feedlog/shared/constants/conversation'
+import { WIDGET_MAX_ENABLED_RULES } from '#layers/feedlog/shared/constants/widget-rules'
+import { WIDGET_LAUNCHER_ALIGNMENT_DEFAULT, WIDGET_LAUNCHER_CLOSE_BEHAVIOR_DEFAULT, WIDGET_LAUNCHER_CLOSE_BEHAVIORS, WIDGET_LAUNCHER_OFFSET_DEFAULT, WIDGET_LAUNCHER_OFFSET_MIN, type WidgetLauncherAlignment, type WidgetLauncherCloseBehavior } from '#layers/feedlog/shared/constants/widget-launcher'
+import { updateWidgetSettingsSchema } from '#layers/feedlog/shared/schemas/widget'
 
 definePageMeta({ layout: 'dashboard', middleware: ['admin'] })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const ctx = useOrgContext()
 const canEdit = computed(() => ctx.value.role === 'owner' || ctx.value.role === 'manager')
-
 const { settings, loading, saving, error, refresh, save, allRules, builtinsPatch, customPatch } = useWidgetSettings()
+const { confirm } = useConfirmDialog()
+const savingSection = ref<'enabled' | 'launcher' | 'assistant' | null>(null)
+const launcherError = ref<string | null>(null)
+const assistantError = ref<string | null>(null)
+const launcherSaved = ref(false)
+const assistantSaved = ref(false)
 
-// Client-side after mount: the endpoint needs the session cookie (mirrors the
-// Members and SSO pages).
-onMounted(() => { if (canEdit.value) void refresh() })
-
-// ---- install -------------------------------------------------------------
-// The endpoint the browser snippet fetches is the customer's own — FeedLog
-// serves no such route — and nothing else tells them to build it: the SDK's
-// README assumes an integrator who already signs these tokens for Product SSO.
-const serverSnippet = `import jwt from 'jsonwebtoken'
-
-// Your own route, reachable only when signed in — the widget trusts whoever
-// this endpoint says the visitor is. The secret stays here, never the browser.
-app.get('/api/feedlog-token', requireSignIn, (req, res) => {
-  const token = jwt.sign(
-    {
-      email:   req.user.email,  // required — identity key
-      name:    req.user.name,   // optional — falls back to the email
-      picture: req.user.avatar, // optional — avatar URL
-      exp: Math.floor(Date.now() / 1000) + 60 * 60, // required — 24h at most
-    },
-    process.env.FEEDLOG_SSO_SECRET, // one of this workspace's enabled secrets
-    { algorithm: 'HS256' },
-  )
-  res.json({ token })
-})`
-
-// Verbatim from the SDK's README, with this workspace's URL filled in: the
-// throw/null distinction is its contract to state, and paraphrasing it once
-// already turned a transient 500 into a spurious sign-out.
-const snippet = computed(() => `import { createWidget } from '@feedlog/widget'
-
-createWidget({
-  baseUrl: '${settings.value?.baseUrl ?? ''}',
-  auth: {
-    // Return a JWT signed by YOUR backend with your org's SSO secret.
-    getToken: async () => {
-      const res = await fetch('/api/feedlog-token')
-      if (!res.ok) throw new Error('temporary failure') // throw = retryable failure
-      return (await res.json()).token ?? null           // null = signed out
-    },
-    // Optional: open your own sign-in UI (popup or full-page redirect).
-    login: () => openYourLoginModal(),
-  },
-  theme: 'auto',
-})`)
-
-const copiedKey = ref<string | null>(null)
-function copy(key: string, text: string) {
-  navigator.clipboard?.writeText(text)
-  copiedKey.value = key
-  setTimeout(() => { copiedKey.value = null }, 1500)
-}
-
-// ---- persistence ---------------------------------------------------------
-// Every mutation commits immediately; a failed save reloads so the UI can never
-// keep showing a state the server rejected.
-async function commit(patch: Parameters<typeof save>[0]) {
-  const err = await save(patch)
-  if (err) {
-    toast.error(err)
-    await refresh()
-    return false
-  }
-  return true
-}
-
-async function toggleEnabled() {
-  if (!settings.value) return
-  await commit({ enabled: !settings.value.enabled })
-}
-
-// ---- support email -------------------------------------------------------
-// Text has no natural commit point the way a switch does, so it takes an
-// explicit Save.
+const alignDraft = ref<WidgetLauncherAlignment>(WIDGET_LAUNCHER_ALIGNMENT_DEFAULT)
+const offsetDraft = reactive<Record<'bottom' | 'side', number | string>>({ bottom: WIDGET_LAUNCHER_OFFSET_DEFAULT, side: WIDGET_LAUNCHER_OFFSET_DEFAULT })
+const closeDraft = ref<WidgetLauncherCloseBehavior>(WIDGET_LAUNCHER_CLOSE_BEHAVIOR_DEFAULT)
 const emailDraft = ref('')
-watch(settings, s => { emailDraft.value = s?.supportEmail ?? '' }, { immediate: true })
-const emailDirty = computed(() => emailDraft.value.trim() !== (settings.value?.supportEmail ?? ''))
+const retentionDraft = ref<number | string>(CONVERSATION_RETENTION_DEFAULT_DAYS)
+const rulesDraft = ref<{ id: string; scenario: string; enabled: boolean; builtin: boolean }[]>([])
 
-async function saveEmail() {
-  if (!emailDirty.value) return
-  if (await commit({ supportEmail: emailDraft.value.trim() })) {
-    toast.success(t('settings.widget.saved'))
-  }
+function hydrateLauncher() {
+  if (!settings.value) return
+  alignDraft.value = settings.value.launcherConfig.alignment
+  offsetDraft.bottom = settings.value.launcherConfig.bottomOffset
+  offsetDraft.side = settings.value.launcherConfig.sideOffset
+  closeDraft.value = settings.value.launcherConfig.closeBehavior
+  launcherError.value = null
+  launcherSaved.value = false
 }
-
-// ---- conversation retention ----------------------------------------------
-const retentionDraft = ref(CONVERSATION_RETENTION_DEFAULT_DAYS)
-watch(settings, s => { retentionDraft.value = s?.conversationRetentionDays ?? CONVERSATION_RETENTION_DEFAULT_DAYS }, { immediate: true })
-const retentionValue = computed(() => Math.trunc(Number(retentionDraft.value)))
-const retentionValid = computed(() => Number.isFinite(retentionValue.value)
-  && retentionValue.value >= CONVERSATION_RETENTION_MIN_DAYS
-  && retentionValue.value <= CONVERSATION_RETENTION_MAX_DAYS)
-const retentionDirty = computed(() => retentionValid.value
-  && retentionValue.value !== (settings.value?.conversationRetentionDays ?? CONVERSATION_RETENTION_DEFAULT_DAYS))
-
-async function saveRetention() {
-  if (!retentionDirty.value) return
-  if (await commit({ conversationRetentionDays: retentionValue.value })) {
-    toast.success(t('settings.widget.saved'))
-  }
+function hydrateAssistant() {
+  if (!settings.value) return
+  emailDraft.value = settings.value.supportEmail ?? ''
+  retentionDraft.value = settings.value.conversationRetentionDays
+  rulesDraft.value = allRules.value.map(rule => ({ ...rule }))
+  assistantError.value = null
+  assistantSaved.value = false
 }
+const onboarding = useOnboarding()
+const installSection = ref<HTMLElement | null>(null)
+const pulsing = ref(false)
+// Arriving from the onboarding guide or demo: bring the section, whose first
+// step is the coding-agent prompt, into view and pulse it once. Watched rather
+// than run on mount, because the demo's install link can also be used while
+// already on this page.
+async function highlightInstall() {
+  if (!onboarding.state.value.highlightInstall || !settings.value) return
+  onboarding.state.value.highlightInstall = false
+  await nextTick()
+  const section = installSection.value
+  if (!section) return
+  section.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  // Restart the animation even if a previous pulse is still running.
+  pulsing.value = false
+  requestAnimationFrame(() => { pulsing.value = true })
+}
+watch(() => onboarding.state.value.highlightInstall, () => void highlightInstall())
+onMounted(async () => {
+  if (!canEdit.value) return
+  await refresh()
+  hydrateLauncher()
+  hydrateAssistant()
+  await highlightInstall()
+})
 
-// ---- rules ---------------------------------------------------------------
-const activeCount = computed(() => settings.value?.enabledCount ?? 0)
+function isValidOffset(value: number | string) {
+  return String(value).trim() !== '' && Number.isSafeInteger(Number(value)) && Number(value) >= WIDGET_LAUNCHER_OFFSET_MIN
+}
+const offsetValid = computed(() => Object.values(offsetDraft).every(isValidOffset))
+const launcherConfigDraft = computed(() => ({ alignment: alignDraft.value, bottomOffset: Number(offsetDraft.bottom), sideOffset: Number(offsetDraft.side), closeBehavior: closeDraft.value }))
+const launcherDirty = computed(() => !!settings.value && (!offsetValid.value || Object.entries(launcherConfigDraft.value).some(([key, value]) => value !== settings.value!.launcherConfig[key as keyof typeof launcherConfigDraft.value])))
+const retentionValid = computed(() => String(retentionDraft.value).trim() !== '' && Number.isInteger(Number(retentionDraft.value)) && Number(retentionDraft.value) >= CONVERSATION_RETENTION_MIN_DAYS && Number(retentionDraft.value) <= CONVERSATION_RETENTION_MAX_DAYS)
+const emailValid = computed(() => updateWidgetSettingsSchema.pick({ supportEmail: true }).safeParse({ supportEmail: emailDraft.value.trim() }).success)
+const assistantPatch = computed(() => ({ supportEmail: emailDraft.value.trim(), conversationRetentionDays: Number(retentionDraft.value), ...builtinsPatch(rulesDraft.value), ...customPatch(rulesDraft.value) }))
+const assistantDirty = computed(() => !!settings.value && (!retentionValid.value || JSON.stringify(assistantPatch.value) !== JSON.stringify({ supportEmail: settings.value.supportEmail ?? '', conversationRetentionDays: settings.value.conversationRetentionDays, ...builtinsPatch(allRules.value), ...customPatch(allRules.value) })))
+const activeCount = computed(() => rulesDraft.value.filter(rule => rule.enabled).length)
 const atLimit = computed(() => activeCount.value >= WIDGET_MAX_ENABLED_RULES)
-// Stay quiet until the limit is close enough to matter.
 const showCount = computed(() => activeCount.value >= WIDGET_MAX_ENABLED_RULES - 2)
+const assistantValid = computed(() => emailValid.value && retentionValid.value && activeCount.value <= WIDGET_MAX_ENABLED_RULES)
 
-// The cap is explained on the spot rather than by disabling the control: a
-// greyed switch can't say why it won't budge, and says nothing at all on touch.
+// Only the section that submitted is rehydrated. Other drafts, including invalid
+// input, must survive both successful saves and failed requests.
+async function saveLauncher() {
+  if (saving.value || !launcherDirty.value || !offsetValid.value) return
+  savingSection.value = 'launcher'
+  launcherError.value = await save({ launcherConfig: launcherConfigDraft.value })
+  if (!launcherError.value) { hydrateLauncher(); launcherSaved.value = true }
+  savingSection.value = null
+}
+async function saveAssistant() {
+  if (saving.value || !assistantDirty.value || !assistantValid.value) return
+  savingSection.value = 'assistant'
+  assistantError.value = await save(assistantPatch.value)
+  if (!assistantError.value) { hydrateAssistant(); assistantSaved.value = true }
+  savingSection.value = null
+}
+async function toggleEnabled() {
+  if (saving.value || !settings.value) return
+  savingSection.value = 'enabled'
+  const err = await save({ enabled: !settings.value.enabled })
+  if (err) toast.error(err)
+  savingSection.value = null
+}
+function resetPlacement() {
+  alignDraft.value = WIDGET_LAUNCHER_ALIGNMENT_DEFAULT
+  offsetDraft.bottom = WIDGET_LAUNCHER_OFFSET_DEFAULT
+  offsetDraft.side = WIDGET_LAUNCHER_OFFSET_DEFAULT
+  launcherError.value = null
+}
+
 const limitOpen = ref(false)
-
 const dialogOpen = ref(false)
 const editingId = ref<string | null>(null)
-const editingText = computed(() => allRules.value.find(r => r.id === editingId.value)?.scenario)
-
+const editingText = computed(() => rulesDraft.value.find(rule => rule.id === editingId.value)?.scenario)
 function openAdd() {
   if (atLimit.value) { limitOpen.value = true; return }
   editingId.value = null
   dialogOpen.value = true
 }
-
-function openEdit(id: string) {
-  editingId.value = id
-  dialogOpen.value = true
-}
-
-async function onRuleSubmit(scenario: string) {
-  const rules = allRules.value.map(r => ({ ...r }))
+function openEdit(id: string) { editingId.value = id; dialogOpen.value = true }
+function onRuleSubmit(scenario: string) {
   if (editingId.value) {
-    const target = rules.find(r => r.id === editingId.value)
+    const target = rulesDraft.value.find(rule => rule.id === editingId.value)
     if (target) target.scenario = scenario
   }
-  else {
-    rules.push({ id: `new-${Date.now()}`, scenario, enabled: true, builtin: false })
-  }
-  await commit(customPatch(rules))
+  else rulesDraft.value.push({ id: `new-${crypto.randomUUID()}`, scenario, enabled: true, builtin: false })
 }
-
-async function toggleRule(id: string) {
-  const rules = allRules.value.map(r => ({ ...r }))
-  const target = rules.find(r => r.id === id)
+function toggleRule(id: string) {
+  const target = rulesDraft.value.find(rule => rule.id === id)
   if (!target) return
-  // Turning a rule off is always allowed; enabling one past the cap explains why.
   if (!target.enabled && atLimit.value) { limitOpen.value = true; return }
   target.enabled = !target.enabled
-  await commit(target.builtin ? builtinsPatch(rules) : customPatch(rules))
+}
+function removeRule(id: string) { rulesDraft.value = rulesDraft.value.filter(rule => rule.id !== id) }
+function ruleText(rule: typeof rulesDraft.value[number]) {
+  const builtin = rule.builtin && settings.value?.rules.builtins.find(item => item.id === rule.id)
+  return builtin ? (locale.value.startsWith('zh') ? builtin.scenarioZh : builtin.scenario) : rule.scenario
 }
 
-const { confirm } = useConfirmDialog()
-async function removeRule(id: string) {
-  const confirmed = await confirm({
-    title: t('settings.widget.deleteTitle'),
-    description: t('settings.widget.deleteDesc'),
-    confirmText: t('settings.widget.deleteConfirm'),
-    cancelText: t('settings.widget.cancel'),
-    variant: 'destructive',
-  })
-  if (!confirmed) return
-  await commit(customPatch(allRules.value.filter(r => r.id !== id).map(r => ({ ...r }))))
+const dirty = computed(() => launcherDirty.value || assistantDirty.value)
+onBeforeRouteLeave(async () => {
+  if (saving.value) return false
+  if (!dirty.value) return true
+  return confirm({ title: t('settings.widget.leaveTitle'), description: t('settings.widget.leaveDescription'), confirmText: t('settings.widget.leaveDiscard'), cancelText: t('settings.widget.leaveKeep'), variant: 'destructive' })
+})
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (!dirty.value && !saving.value) return
+  event.preventDefault()
+  event.returnValue = ''
 }
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 </script>
 
 <template>
   <div class="flex flex-col h-full">
     <header class="h-16 px-6 border-b border-border flex items-center shrink-0 bg-card">
       <div>
-        <h2 class="font-heading text-lg font-bold">{{ $t('settings.widget.title') }}</h2>
-        <p class="text-xs text-muted-foreground">{{ $t('settings.widget.subtitle') }}</p>
+        <h2 class="font-heading text-lg font-bold">
+          {{ $t('settings.widget.title') }}
+        </h2><p class="text-xs text-muted-foreground">
+          {{ $t('settings.widget.subtitle') }}
+        </p>
       </div>
     </header>
-
     <div class="flex-1 overflow-y-auto">
-      <div class="max-w-4xl mx-auto px-6 py-8 space-y-6">
-        <p v-if="!canEdit" class="text-sm text-muted-foreground">{{ $t('settings.widget.ownerOnly') }}</p>
-        <p v-else-if="loading" class="text-sm text-muted-foreground">{{ $t('settings.loading') }}</p>
-        <p v-else-if="error" class="text-sm text-red-600">{{ error }}</p>
-
+      <div class="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+        <p
+          v-if="!canEdit"
+          class="text-sm text-muted-foreground"
+        >
+          {{ $t('settings.widget.ownerOnly') }}
+        </p>
+        <p
+          v-else-if="loading"
+          class="text-sm text-muted-foreground"
+        >
+          {{ $t('settings.loading') }}
+        </p>
+        <p
+          v-else-if="error"
+          class="text-sm text-red-600"
+        >
+          {{ error }}
+        </p>
         <template v-else-if="settings">
-          <!-- Install -->
-          <section class="rounded-xl border border-border bg-card overflow-hidden">
-            <div class="px-6 py-5 border-b border-border flex items-start justify-between gap-4">
+          <OnboardingInstallCard />
+
+          <div ref="installSection" class="rounded-xl" :class="pulsing && 'onboarding-install-pulse'" @animationend="pulsing = false">
+            <WidgetInstallationSection
+              :base-url="settings.baseUrl"
+              :enabled="settings.enabled"
+              :saving="saving"
+              @toggle="toggleEnabled"
+            />
+          </div>
+
+          <section
+            class="rounded-xl border border-border bg-card overflow-hidden"
+            data-widget-section="launcher"
+          >
+            <div class="px-6 py-5 border-b border-border flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h3 class="font-heading font-bold text-sm">{{ $t('settings.widget.installSection') }}</h3>
-                <p class="text-xs text-muted-foreground mt-0.5">{{ $t('settings.widget.installDesc') }}</p>
-              </div>
-              <button
-                class="shrink-0 flex items-center gap-2.5 text-xs font-semibold"
-                :disabled="saving"
-                @click="toggleEnabled"
-              >
-                <span
-                  class="w-9 h-5 rounded-full transition-colors relative"
-                  :class="settings.enabled ? 'bg-primary' : 'bg-muted-foreground/30'"
-                >
-                  <span
-                    class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
-                    :class="settings.enabled ? 'left-[18px]' : 'left-0.5'"
-                  />
-                </span>
-                {{ $t('settings.widget.enabledLabel') }}
-              </button>
-            </div>
-
-            <div class="px-6 py-6 space-y-5">
-              <div>
-                <label class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('settings.widget.baseUrlLabel') }}</label>
-                <div class="mt-2 flex items-center gap-2">
-                  <code class="flex-1 min-w-0 truncate text-xs font-mono px-2.5 py-2 rounded-md bg-muted border border-border">{{ settings.baseUrl }}</code>
-                  <button
-                    class="w-8 h-8 rounded-md hover:bg-secondary transition-colors flex items-center justify-center shrink-0"
-                    :class="copiedKey === 'url' ? 'text-[var(--status-done)]' : 'text-muted-foreground'"
-                    @click="copy('url', settings.baseUrl)"
-                  >
-                    <Icon :name="copiedKey === 'url' ? 'lucide:check' : 'lucide:copy'" size="14" />
-                  </button>
-                </div>
-                <p class="text-[11px] text-muted-foreground mt-1.5">{{ $t('settings.widget.baseUrlHint') }}</p>
-              </div>
-
-              <div>
-                <div class="flex items-center justify-between">
-                  <label class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('settings.widget.serverLabel') }}</label>
-                  <button
-                    class="h-7 px-2.5 rounded-md border border-border bg-background hover:bg-secondary transition-colors flex items-center gap-1.5 text-[11px] font-semibold"
-                    :class="copiedKey === 'server' ? 'text-[var(--status-done)]' : 'text-muted-foreground'"
-                    @click="copy('server', serverSnippet)"
-                  >
-                    <Icon :name="copiedKey === 'server' ? 'lucide:check' : 'lucide:copy'" size="12" />
-                    {{ copiedKey === 'server' ? $t('settings.widget.copied') : $t('settings.widget.copy') }}
-                  </button>
-                </div>
-                <pre class="mt-2 px-4 py-3 rounded-lg bg-muted/40 border border-border overflow-x-auto text-xs font-mono leading-relaxed"><code>{{ serverSnippet }}</code></pre>
-                <p class="text-[11px] text-muted-foreground mt-1.5">{{ $t('settings.widget.serverHint') }}</p>
-              </div>
-
-              <div>
-                <div class="flex items-center justify-between">
-                  <label class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('settings.widget.snippetLabel') }}</label>
-                  <button
-                    class="h-7 px-2.5 rounded-md border border-border bg-background hover:bg-secondary transition-colors flex items-center gap-1.5 text-[11px] font-semibold"
-                    :class="copiedKey === 'snippet' ? 'text-[var(--status-done)]' : 'text-muted-foreground'"
-                    @click="copy('snippet', snippet)"
-                  >
-                    <Icon :name="copiedKey === 'snippet' ? 'lucide:check' : 'lucide:copy'" size="12" />
-                    {{ copiedKey === 'snippet' ? $t('settings.widget.copied') : $t('settings.widget.copy') }}
-                  </button>
-                </div>
-                <pre class="mt-2 px-4 py-3 rounded-lg bg-muted/40 border border-border overflow-x-auto text-xs font-mono leading-relaxed"><code>{{ snippet }}</code></pre>
-              </div>
-
-              <p class="text-[11px] text-muted-foreground">{{ $t('settings.widget.enabledHint') }}</p>
-            </div>
-          </section>
-
-          <!-- Contact support -->
-          <section class="rounded-xl border border-border bg-card overflow-hidden">
-            <div class="px-6 py-5 border-b border-border">
-              <h3 class="font-heading font-bold text-sm">{{ $t('settings.widget.supportSection') }}</h3>
-              <p class="text-xs text-muted-foreground mt-0.5">{{ $t('settings.widget.supportDesc') }}</p>
-            </div>
-
-            <div class="px-6 py-6 space-y-6">
-              <div>
-                <label class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('settings.widget.emailLabel') }}</label>
-                <div class="mt-2 flex items-center gap-2">
-                  <input
-                    v-model="emailDraft"
-                    type="email"
-                    :placeholder="$t('settings.widget.emailPlaceholder')"
-                    class="flex-1 h-10 px-3 rounded-lg border border-border bg-background text-sm focus:outline-none focus:border-primary transition-colors"
-                    @keydown.enter="saveEmail"
-                  >
-                  <button
-                    v-if="emailDirty"
-                    class="h-10 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-heading font-bold hover:opacity-90 transition-all shrink-0"
-                    :disabled="saving"
-                    @click="saveEmail"
-                  >
-                    {{ $t('settings.widget.save') }}
-                  </button>
-                </div>
-                <p class="text-[11px] text-muted-foreground mt-1.5">{{ $t('settings.widget.emailHint') }}</p>
-              </div>
-
-              <div class="pt-5 border-t border-border">
-                <label class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('settings.widget.retentionLabel') }}</label>
-                <div class="mt-2 flex items-center gap-2">
-                  <div class="flex-1 flex items-center gap-2">
-                    <input
-                      v-model="retentionDraft"
-                      type="number"
-                      :min="CONVERSATION_RETENTION_MIN_DAYS"
-                      :max="CONVERSATION_RETENTION_MAX_DAYS"
-                      class="w-28 h-10 px-3 rounded-lg border bg-background text-sm tabular-nums focus:outline-none focus:border-primary transition-colors"
-                      :class="retentionValid ? 'border-border' : 'border-destructive'"
-                      @keydown.enter="saveRetention"
-                    >
-                    <span class="text-sm text-muted-foreground">{{ $t('settings.widget.retentionUnit') }}</span>
-                  </div>
-                  <button
-                    v-if="retentionDirty"
-                    class="h-10 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-heading font-bold hover:opacity-90 transition-all shrink-0"
-                    :disabled="saving"
-                    @click="saveRetention"
-                  >
-                    {{ $t('settings.widget.save') }}
-                  </button>
-                </div>
-                <p class="text-[11px] mt-1.5" :class="retentionValid ? 'text-muted-foreground' : 'text-destructive'">
-                  {{ retentionValid
-                    ? $t('settings.widget.retentionHint')
-                    : $t('settings.widget.retentionRange', { min: CONVERSATION_RETENTION_MIN_DAYS, max: CONVERSATION_RETENTION_MAX_DAYS }) }}
+                <h3 class="font-heading font-bold text-sm">
+                  {{ $t('settings.widget.placementSection') }}
+                </h3><p class="text-xs text-muted-foreground mt-0.5">
+                  {{ $t('settings.widget.placementDesc') }}
                 </p>
               </div>
-
-              <div class="pt-5 border-t border-border">
-                <div class="flex items-center justify-between gap-4">
-                  <div>
-                    <p class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{{ $t('settings.widget.rulesLabel') }}</p>
-                    <p class="text-[11px] text-muted-foreground mt-1">{{ $t('settings.widget.rulesHint') }}</p>
+              <button
+                type="button"
+                class="h-8 px-3 rounded-md border border-border bg-background hover:bg-secondary transition-colors flex items-center gap-1.5 text-xs font-semibold disabled:opacity-50"
+                :disabled="saving"
+                @click="resetPlacement"
+              >
+                <Icon
+                  name="lucide:rotate-ccw"
+                  size="14"
+                />{{ $t('settings.widget.resetPlacement') }}
+              </button>
+            </div>
+            <div class="px-6 py-6 grid lg:grid-cols-[270px_minmax(0,1fr)] gap-6 items-start">
+              <fieldset
+                :disabled="saving"
+                class="min-w-0 space-y-6"
+              >
+                <div>
+                  <p id="launcher-alignment-label" class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                    {{ $t('settings.widget.alignLabel') }}
+                  </p>
+                  <ToggleGroup
+                    type="single"
+                    :spacing="1"
+                    class="mt-2 gap-0 rounded-lg border border-border bg-background p-1"
+                    :model-value="alignDraft"
+                    :disabled="saving"
+                    aria-labelledby="launcher-alignment-label"
+                    @update:model-value="value => { if (value === 'left' || value === 'right') alignDraft = value }"
+                  >
+                    <ToggleGroupItem
+                      v-for="option in (['left', 'right'] as const)"
+                      :key="option"
+                      :value="option"
+                      class="h-8 rounded-md px-3 text-xs font-semibold text-muted-foreground transition-colors hover:bg-transparent hover:text-foreground data-[state=on]:bg-primary data-[state=on]:text-primary-foreground disabled:cursor-not-allowed"
+                    >
+                      {{ $t(`settings.widget.align_${option}`) }}
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                  <div class="grid grid-cols-2 gap-4 mt-5">
+                    <div
+                      v-for="field in (['bottom', 'side'] as const)"
+                      :key="field"
+                      class="min-w-0"
+                    >
+                      <label
+                        :for="`launcher-${field}-offset`"
+                        class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground"
+                      >{{ $t(field === 'bottom' ? 'settings.widget.offsetLabel' : `settings.widget.sideOffsetLabel_${alignDraft}`) }}</label>
+                      <div class="mt-2 flex items-center gap-2">
+                        <input
+                          :id="`launcher-${field}-offset`"
+                          v-model="offsetDraft[field]"
+                          type="number"
+                          :min="WIDGET_LAUNCHER_OFFSET_MIN"
+                          step="1"
+                          class="min-w-16 w-0 flex-1 h-10 px-3 rounded-lg border bg-background text-sm tabular-nums focus:outline-none focus:border-primary transition-colors"
+                          :class="isValidOffset(offsetDraft[field]) ? 'border-border' : 'border-destructive'"
+                          :aria-invalid="!isValidOffset(offsetDraft[field])"
+                          :aria-describedby="isValidOffset(offsetDraft[field]) ? undefined : `launcher-${field}-error`"
+                          @keydown.enter="saveLauncher"
+                        >
+                        <span class="shrink-0 whitespace-nowrap text-xs text-muted-foreground">{{ $t('settings.widget.offsetUnit') }}</span>
+                      </div>
+                      <p
+                        v-if="!isValidOffset(offsetDraft[field])"
+                        :id="`launcher-${field}-error`"
+                        class="text-[11px] text-destructive mt-2"
+                        role="alert"
+                      >
+                        {{ $t('settings.widget.offsetInvalid') }}
+                      </p>
+                    </div>
                   </div>
-                  <div class="flex items-center gap-3 shrink-0">
-                    <span v-if="showCount" class="text-[11px] text-muted-foreground tabular-nums">
-                      {{ $t('settings.widget.activeCount', { count: activeCount, max: WIDGET_MAX_ENABLED_RULES }) }}
-                    </span>
-                    <button
+                  <p class="text-[11px] text-muted-foreground mt-3">
+                    {{ $t('settings.widget.placementHint') }}
+                  </p>
+                </div>
+                <div class="pt-5 border-t border-border">
+                  <label
+                    for="launcher-close-behavior"
+                    class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground"
+                  >
+                    {{ $t('settings.widget.closeBehaviorLabel') }}
+                  </label>
+                  <Select
+                    :model-value="closeDraft"
+                    :disabled="saving"
+                    @update:model-value="value => { if (value === 'none' || value === 'collapse' || value === 'hide') closeDraft = value }"
+                  >
+                    <SelectTrigger
+                      id="launcher-close-behavior"
+                      class="mt-2 w-full data-[size=default]:h-10 rounded-lg border-border bg-background text-xs"
+                      aria-describedby="launcher-close-hint"
+                    >
+                      <SelectValue>{{ $t(`settings.widget.closeBehavior_${closeDraft}`) }}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent class="max-w-[calc(100vw-2rem)]">
+                      <SelectItem
+                        v-for="behavior in WIDGET_LAUNCHER_CLOSE_BEHAVIORS"
+                        :key="behavior"
+                        :value="behavior"
+                        :text-value="$t(`settings.widget.closeBehavior_${behavior}`)"
+                        class="py-2.5 text-xs"
+                      >
+                        <span class="block min-w-0">
+                          <span class="block font-medium leading-5">
+                            {{ $t(`settings.widget.closeBehavior_${behavior}`) }}
+                          </span>
+                          <span class="mt-0.5 block text-[11px] leading-snug opacity-70">
+                            {{ $t(`settings.widget.closeBehaviorHint_${behavior}`) }}
+                          </span>
+                        </span>
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p id="launcher-close-hint" class="text-[11px] text-muted-foreground mt-3">
+                    {{ $t(`settings.widget.closeBehaviorHint_${closeDraft}`) }}
+                  </p>
+                </div>
+              </fieldset>
+              <WidgetLauncherPreview
+                class="border-t border-border pt-6 lg:border-t-0 lg:border-l lg:pl-6 lg:pt-0"
+                :alignment="alignDraft"
+                :bottom-offset="offsetDraft.bottom"
+                :side-offset="offsetDraft.side"
+                :close-behavior="closeDraft"
+                :enabled="settings.enabled"
+              />
+            </div>
+            <WidgetSaveBar
+              :dirty="launcherDirty"
+              :saving="savingSection === 'launcher'"
+              :disabled="saving || !offsetValid"
+              :error="launcherError"
+              :saved="launcherSaved"
+              :saved-hint="$t('settings.widget.launcherSavedHint')"
+              @cancel="hydrateLauncher"
+              @save="saveLauncher"
+            />
+          </section>
+
+          <section
+            class="rounded-xl border border-border bg-card overflow-hidden"
+            data-widget-section="assistant"
+          >
+            <div class="px-6 py-5 border-b border-border">
+              <h3 class="font-heading font-bold text-sm">
+                {{ $t('settings.widget.supportSection') }}
+              </h3><p class="text-xs text-muted-foreground mt-0.5">
+                {{ $t('settings.widget.supportDesc') }}
+              </p>
+            </div>
+            <fieldset
+              :disabled="saving"
+              class="px-6 py-6 space-y-6 min-w-0"
+            >
+              <div>
+                <label
+                  for="widget-support-email"
+                  class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground"
+                >{{ $t('settings.widget.emailLabel') }}</label>
+                <input
+                  id="widget-support-email"
+                  v-model="emailDraft"
+                  type="email"
+                  :placeholder="$t('settings.widget.emailPlaceholder')"
+                  class="mt-2 w-full min-w-0 h-10 px-3 rounded-lg border bg-background text-sm focus:outline-none focus:border-primary transition-colors"
+                  :class="emailValid ? 'border-border' : 'border-destructive'"
+                  :aria-invalid="!emailValid"
+                  @keydown.enter="saveAssistant"
+                >
+                <p
+                  class="text-[11px] mt-1.5"
+                  :class="emailValid ? 'text-muted-foreground' : 'text-destructive'"
+                >
+                  {{ $t(emailValid ? 'settings.widget.emailHint' : 'settings.widget.invalidEmail') }}
+                </p>
+              </div>
+              <div class="pt-5 border-t border-border">
+                <div class="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <p class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                      {{ $t('settings.widget.rulesLabel') }}
+                    </p><p class="text-[11px] text-muted-foreground mt-1">
+                      {{ $t('settings.widget.rulesHint') }}
+                    </p>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <span
+                      v-if="showCount"
+                      class="text-[11px] text-muted-foreground tabular-nums"
+                    >{{ $t('settings.widget.activeCount', { count: activeCount, max: WIDGET_MAX_ENABLED_RULES }) }}</span><button
+                      type="button"
                       class="h-8 px-3 rounded-lg border border-border bg-background text-xs font-semibold hover:bg-secondary transition-colors flex items-center gap-1.5"
                       @click="openAdd"
                     >
-                      <Icon name="lucide:plus" size="13" />
-                      {{ $t('settings.widget.addRule') }}
+                      <Icon
+                        name="lucide:plus"
+                        size="13"
+                      />{{ $t('settings.widget.addRule') }}
                     </button>
                   </div>
                 </div>
-
                 <ul class="mt-4 divide-y divide-border rounded-lg border border-border overflow-hidden">
                   <li
-                    v-for="rule in allRules"
+                    v-for="rule in rulesDraft"
                     :key="rule.id"
-                    class="px-4 py-3 flex items-start gap-3 bg-background"
+                    class="px-4 py-3 flex flex-wrap items-start gap-3 bg-background"
                   >
-                    <button
-                      class="mt-0.5 shrink-0"
+                    <Switch
+                      :id="`widget-rule-${rule.id}`"
+                      :model-value="rule.enabled"
                       :disabled="saving"
-                      @click="toggleRule(rule.id)"
+                      class="mt-0.5"
+                      :aria-label="ruleText(rule)"
+                      @update:model-value="toggleRule(rule.id)"
+                    />
+                    <label
+                      :for="`widget-rule-${rule.id}`"
+                      class="flex-1 min-w-24 text-xs leading-relaxed break-words"
+                      :class="rule.enabled ? '' : 'text-muted-foreground'"
+                    >{{ ruleText(rule) }}<span
+                      v-if="rule.builtin"
+                      class="ml-1.5 align-middle text-[10px] font-bold uppercase tracking-wider bg-secondary text-primary px-1.5 py-0.5 rounded"
+                    >{{ $t('settings.widget.builtinBadge') }}</span></label>
+                    <div
+                      v-if="!rule.builtin"
+                      class="flex items-center gap-1 shrink-0 ml-auto"
                     >
-                      <span
-                        class="w-9 h-5 rounded-full transition-colors relative block"
-                        :class="rule.enabled ? 'bg-primary' : 'bg-muted-foreground/30'"
-                      >
-                        <span
-                          class="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
-                          :class="rule.enabled ? 'left-[18px]' : 'left-0.5'"
-                        />
-                      </span>
-                    </button>
-
-                    <p class="flex-1 text-xs leading-relaxed" :class="rule.enabled ? '' : 'text-muted-foreground'">
-                      {{ rule.scenario }}
-                      <span
-                        v-if="rule.builtin"
-                        class="ml-1.5 align-middle text-[10px] font-bold uppercase tracking-wider bg-secondary text-primary px-1.5 py-0.5 rounded"
-                      >{{ $t('settings.widget.builtinBadge') }}</span>
-                    </p>
-
-                    <!-- Built-ins toggle but never change text: their wording ships with the product. -->
-                    <div v-if="!rule.builtin" class="flex items-center gap-1 shrink-0">
                       <button
-                        class="w-7 h-7 rounded-md hover:bg-secondary transition-colors flex items-center justify-center text-muted-foreground"
+                        type="button"
+                        class="size-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground"
+                        :aria-label="$t('settings.widget.editRule')"
                         @click="openEdit(rule.id)"
                       >
-                        <Icon name="lucide:pencil" size="13" />
+                        <Icon
+                          name="lucide:pencil"
+                          size="13"
+                        />
                       </button>
                       <button
-                        class="w-7 h-7 rounded-md hover:bg-secondary transition-colors flex items-center justify-center text-muted-foreground hover:text-red-600"
+                        type="button"
+                        class="size-8 rounded-md hover:bg-secondary flex items-center justify-center text-muted-foreground hover:text-destructive"
+                        :aria-label="$t('settings.widget.deleteConfirm')"
                         @click="removeRule(rule.id)"
                       >
-                        <Icon name="lucide:trash-2" size="13" />
+                        <Icon
+                          name="lucide:trash-2"
+                          size="13"
+                        />
                       </button>
                     </div>
                   </li>
                 </ul>
               </div>
-            </div>
+              <div class="pt-5 border-t border-border">
+                <label
+                  for="widget-retention"
+                  class="text-[11px] font-bold uppercase tracking-wider text-muted-foreground"
+                >{{ $t('settings.widget.retentionLabel') }}</label>
+                <div class="mt-2 flex items-center gap-2">
+                  <input
+                    id="widget-retention"
+                    v-model="retentionDraft"
+                    type="number"
+                    :min="CONVERSATION_RETENTION_MIN_DAYS"
+                    :max="CONVERSATION_RETENTION_MAX_DAYS"
+                    step="1"
+                    class="w-28 h-10 px-3 rounded-lg border bg-background text-sm tabular-nums focus:outline-none focus:border-primary transition-colors"
+                    :class="retentionValid ? 'border-border' : 'border-destructive'"
+                    :aria-invalid="!retentionValid"
+                    @keydown.enter="saveAssistant"
+                  ><span class="text-sm text-muted-foreground">{{ $t('settings.widget.retentionUnit') }}</span>
+                </div>
+                <p
+                  class="text-[11px] mt-1.5"
+                  :class="retentionValid ? 'text-muted-foreground' : 'text-destructive'"
+                >
+                  {{ retentionValid ? $t('settings.widget.retentionHint') : $t('settings.widget.retentionRange', { min: CONVERSATION_RETENTION_MIN_DAYS, max: CONVERSATION_RETENTION_MAX_DAYS }) }}
+                </p>
+              </div>
+            </fieldset>
+            <WidgetSaveBar
+              :dirty="assistantDirty"
+              :saving="savingSection === 'assistant'"
+              :disabled="saving || !assistantValid"
+              :error="assistantError"
+              :saved="assistantSaved"
+              @cancel="hydrateAssistant"
+              @save="saveAssistant"
+            />
           </section>
         </template>
       </div>
     </div>
-
-    <WidgetRuleDialog v-model:open="dialogOpen" :initial="editingText" @submit="onRuleSubmit" />
-
+    <WidgetRuleDialog
+      v-model:open="dialogOpen"
+      :initial="editingText"
+      @submit="onRuleSubmit"
+    />
     <Dialog v-model:open="limitOpen">
       <DialogContent class="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle class="font-heading">{{ $t('settings.widget.limitTitle') }}</DialogTitle>
-          <DialogDescription class="text-sm">
-            {{ $t('settings.widget.limitDesc', { max: WIDGET_MAX_ENABLED_RULES }) }}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
+          <DialogTitle class="font-heading">
+            {{ $t('settings.widget.limitTitle') }}
+          </DialogTitle><DialogDescription>{{ $t('settings.widget.limitDesc', { max: WIDGET_MAX_ENABLED_RULES }) }}</DialogDescription>
+        </DialogHeader><DialogFooter>
           <button
-            class="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-heading font-bold hover:opacity-90 transition-all"
+            type="button"
+            class="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-heading font-bold hover:opacity-90"
             @click="limitOpen = false"
           >
             {{ $t('settings.widget.gotIt') }}
@@ -430,3 +533,15 @@ async function removeRule(id: string) {
     </Dialog>
   </div>
 </template>
+
+<style scoped>
+/* One emphasis pulse: the outline strengthens, holds briefly, then fades back to none. */
+.onboarding-install-pulse { animation: onboarding-install-pulse 1.6s ease-in-out; }
+@keyframes onboarding-install-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent); }
+  20%, 45% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--primary) 35%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-install-pulse { animation-duration: 0.01s; }
+}
+</style>

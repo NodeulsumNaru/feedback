@@ -24,6 +24,10 @@ import { uuidv7 } from 'uuidv7'
 // message, written in the flow's first transaction) so subscribers can join
 // the events of one message flow.
 export interface FeedLogDomainEventMap {
+  'inbox.handoff': { conversationId: string; reason: import('../../shared/inbox/state').HandoffReason }
+  'inbox.staff-replied': { conversationId: string; itemId: string }
+  'inbox.closed': { conversationId: string; fromStatus: import('../../shared/inbox/state').InboxStatus }
+
   'widget.message-received': {
     conversationId: string
     messageId: string
@@ -46,7 +50,7 @@ export interface FeedLogDomainEventMap {
     boardId: string | null
     // Which entry point filed the feedback — a domain fact in its own right
     // (the post row does not record it). messageId is null for portal.
-    source: 'portal' | 'widget'
+    source: 'portal' | 'widget' | 'mcp'
     messageId: string | null
   }
 }
@@ -57,6 +61,9 @@ export type DomainEventName = keyof FeedLogDomainEventMap
 // onAnyDomainEvent to register on; `satisfies` keeps the two in lockstep —
 // a map entry missing here would silently escape cross-cutting subscribers.
 const DOMAIN_EVENT_NAMES = Object.keys({
+  'inbox.handoff': null,
+  'inbox.staff-replied': null,
+  'inbox.closed': null,
   'widget.message-received': null,
   'widget.message-resolved': null,
   'widget.message-processing-failed': null,
@@ -169,6 +176,14 @@ export function publishDomainEvent<Name extends DomainEventName>(
     request: event,
   }
   event.waitUntil(dispatchDomainEvent(useNitroApp(), domainEvent, context))
+}
+
+// Scheduled tasks have no HTTP request. Their caller awaits delivery before
+// the invocation ends; subscribers already accept an absent request context.
+export function publishBackgroundDomainEvent<Name extends DomainEventName>(
+  domainEvent: DomainEventEnvelope<Name>,
+): Promise<void> {
+  return dispatchDomainEvent(useNitroApp(), domainEvent, {})
 }
 
 // Hookable's callHook runs listeners sequentially and rejects on the first

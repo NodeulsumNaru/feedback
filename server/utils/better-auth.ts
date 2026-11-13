@@ -2,7 +2,7 @@ import { betterAuth, type BetterAuthOptions } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { admin, anonymous, bearer, customSession, organization } from 'better-auth/plugins'
 import { defu } from 'defu'
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { uuidv7 } from 'uuidv7'
 import { db } from '../db'
 import { member, organization as orgTable, user as userTable } from '../db/schemas'
@@ -12,12 +12,15 @@ import { GUEST_EMAIL_DOMAIN } from '../../shared/utils/guest'
 import { guestTag } from '../../shared/utils/identity'
 import { hashPassword, verifyPassword } from './password-hash'
 import { consola } from 'consola'
+import { mcpAuthPlugins } from '../mcp/auth-plugins'
+import { mcpEnabled, type mcpConfig } from '../mcp/config'
+import { cleanupMemberMcpAccess, cleanupOrganizationMcpAccess, cleanupUserMcpAccess } from '../mcp/grants'
 
 const logger = consola.withTag('auth')
 
 const env = process.env
 
-const systemAdminEmails = env.SYSTEM_ADMIN_EMAILS?.split(',').map(s => s.trim()).filter(Boolean) ?? []
+export const systemAdminEmails = env.SYSTEM_ADMIN_EMAILS?.split(',').map(s => s.trim()).filter(Boolean) ?? []
 
 const hasGoogle = !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)
 const hasGithub = !!(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET)
@@ -38,11 +41,9 @@ if (!hasOAuth && !emailLoginEnabled) {
   )
 }
 
-// overrideUserInfoOnSignIn re-syncs name / avatar / email from the provider on
-// every OAuth sign-in. FeedLog has no self-serve profile editor, so the provider
-// is the source of truth — without this a rename on their side would stay
-// invisible here forever. Note it only fires on a fresh OAuth callback, not on
-// an existing session.
+// First OAuth signup still copies name / avatar from the provider. Later
+// callbacks must not overwrite them: users can edit both in-app, and a re-login
+// would otherwise discard those edits.
 const socialProviders: Record<string, {
   clientId: string
   clientSecret: string
@@ -52,14 +53,14 @@ if (hasGoogle) {
   socialProviders.google = {
     clientId: env.GOOGLE_CLIENT_ID!,
     clientSecret: env.GOOGLE_CLIENT_SECRET!,
-    overrideUserInfoOnSignIn: true,
+    overrideUserInfoOnSignIn: false,
   }
 }
 if (hasGithub) {
   socialProviders.github = {
     clientId: env.GITHUB_CLIENT_ID!,
     clientSecret: env.GITHUB_CLIENT_SECRET!,
-    overrideUserInfoOnSignIn: true,
+    overrideUserInfoOnSignIn: false,
   }
 }
 
@@ -98,7 +99,11 @@ const emailVerification = hasEmailProvider
 // Build the orgList shape attached to every session via customSession plugin.
 // Cookie cache (60s) keeps this off the DB hot path; ≤60s staleness on role
 // changes is acceptable.
-async function loadOrgList(userId: string) {
+//
+// `confineToOrgId` exists for product-SSO sessions: the asserting org signs
+// whatever email it likes, so an unfiltered list would answer "which other orgs
+// does this person belong to, and as what?" for any address it cares to guess.
+async function loadOrgList(userId: string, confineToOrgId?: string | null) {
   const rows = await db
     .select({
       orgId: orgTable.id,
@@ -109,7 +114,11 @@ async function loadOrgList(userId: string) {
     })
     .from(member)
     .innerJoin(orgTable, eq(member.organizationId, orgTable.id))
-    .where(eq(member.userId, userId))
+    .where(
+      confineToOrgId
+        ? and(eq(member.userId, userId), eq(member.organizationId, confineToOrgId))
+        : eq(member.userId, userId),
+    )
   return rows
 }
 
@@ -120,12 +129,20 @@ async function loadOrgList(userId: string) {
 // invited users sign in and click Accept on /invite?id=... themselves.
 async function bootstrapAfterUserCreate(newUser: { id: string; email: string }) {
   if (!systemAdminEmails.includes(newUser.email)) return
-  await db.insert(member).values({
+  // default-org comes from a migration, so the first owner joining is the
+  // install's "new organization" moment. Later admins and upgraded installs
+  // with an owner already in place get no sample data.
+  const [existingOwner] = await db.select({ id: member.id }).from(member)
+    .where(and(eq(member.organizationId, DEFAULT_ORG_ID), sql`'owner' = ANY(string_to_array(${member.role}, ','))`)).limit(1)
+  const inserted = await db.insert(member).values({
     id: uuidv7(),
     organizationId: DEFAULT_ORG_ID,
     userId: newUser.id,
     role: 'owner',
-  }).onConflictDoNothing()
+  }).onConflictDoNothing().returning({ id: member.id })
+  if (existingOwner || !inserted.length) return
+  const { seedOnboarding } = await import('../lib/onboarding/seed')
+  await seedOnboarding({ orgId: DEFAULT_ORG_ID, ownerId: newUser.id })
 }
 
 // The plugin picks the name before the row exists, so the id-derived tag can only
@@ -181,7 +198,7 @@ export function buildAuthConfig(overrides: AuthConfigOverrides = {}): BetterAuth
       logger.warn(`Invitation email failed for ${data.email}: ${(e as Error)?.message ?? e}`)
     }
   }
-  const orgOpts = {
+  const orgOpts: NonNullable<Parameters<typeof organization>[0]> = {
     ac,
     roles: { owner, manager, contributor },
     creatorRole: 'owner' as const,
@@ -190,10 +207,21 @@ export function buildAuthConfig(overrides: AuthConfigOverrides = {}): BetterAuth
     // After the spread so our best-effort wrapper wins over an override's own
     // sender (it already delegates to that override via rawSendInvite).
     sendInvitationEmail,
+    organizationHooks: {
+      ...overrides.organizationExtras?.organizationHooks,
+      afterRemoveMember: async (data) => {
+        await cleanupMemberMcpAccess(data.member.id, data.user.id)
+        await overrides.organizationExtras?.organizationHooks?.afterRemoveMember?.(data)
+      },
+      afterDeleteOrganization: async (data, context) => {
+        await cleanupOrganizationMcpAccess(data.organization.id, data.user.id)
+        await overrides.organizationExtras?.organizationHooks?.afterDeleteOrganization?.(data, context)
+      },
+    },
   }
   const mergedSocial = defu(overrides.socialProviderOverrides ?? {}, socialProviders) as typeof socialProviders
   // Guests short-circuit ahead of the override so a deployment that swaps in its
-  // own bootstrap (the SaaS layer does) still gets them named — and never runs
+  // own bootstrap still gets them named — and never runs
   // org-membership bootstrap for an identity that can't be a member.
   const bootstrap = overrides.userCreateAfter ?? bootstrapAfterUserCreate
   const afterUserCreate = async (newUser: { id: string; email: string; isAnonymous?: boolean | null }) => {
@@ -233,7 +261,8 @@ export function buildAuthConfig(overrides: AuthConfigOverrides = {}): BetterAuth
       }),
       organization(orgOpts),
       customSession(async ({ user, session }) => {
-        const orgList = await loadOrgList(user.id)
+        const ssoOrgId = (session as { ssoOrgId?: string | null }).ssoOrgId
+        const orgList = await loadOrgList(user.id, ssoOrgId)
         return { user, session, orgList }
       }),
       ...(overrides.extraPlugins ?? []),
@@ -252,6 +281,11 @@ export function buildAuthConfig(overrides: AuthConfigOverrides = {}): BetterAuth
       user: {
         create: {
           after: afterUserCreate,
+        },
+        delete: {
+          before: async (deletedUser, context) => {
+            await cleanupUserMcpAccess(deletedUser.id, context?.context.session?.user.id ?? deletedUser.id)
+          },
         },
       },
     },
@@ -295,7 +329,34 @@ export const auth = new Proxy({} as AuthInstance, {
   },
 })
 
+// Keep the OAuth issuer independent of ordinary web auth host switching.
+const mcpInstances = new Map<string, ReturnType<typeof createMcpAuth>>()
+function createMcpAuth(config: ReturnType<typeof mcpConfig>) {
+  const base = buildAuthConfig(_registeredOverrides ?? {})
+  return betterAuth({
+    ...base,
+    baseURL: config.origin,
+    // Organization scope and audit must change through the application management API.
+    disabledPaths: [...(base.disabledPaths ?? []), '/oauth2/delete-consent', '/oauth2/update-consent'],
+    trustedOrigins: [config.origin],
+    plugins: [...(base.plugins ?? []), ...mcpAuthPlugins(config)],
+    session: { ...base.session, cookieCache: { enabled: false } },
+  })
+}
+
+export function getMcpAuth(config: ReturnType<typeof mcpConfig>) {
+  let instance = mcpInstances.get(config.origin)
+  if (!instance) {
+    instance = createMcpAuth(config)
+    // Self-hosted installations may expose aliases; do not retain unbounded host keys.
+    if (mcpInstances.size >= 16) mcpInstances.delete(mcpInstances.keys().next().value!)
+    mcpInstances.set(config.origin, instance)
+  }
+  return instance
+}
+
 export const authConfig = {
+  mcp: mcpEnabled(),
   google: hasGoogle,
   github: hasGithub,
   email: emailLoginEnabled,

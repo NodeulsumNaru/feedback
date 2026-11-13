@@ -1,18 +1,13 @@
 import type { ResolvedWidgetSettings } from '~~/shared/utils/widget-settings'
 import type { WidgetCustomRule } from '~~/shared/constants/widget-rules'
+import type { UpdateWidgetSettingsInput } from '~~/shared/schemas/widget'
 
 export type WidgetSettingsResponse = ResolvedWidgetSettings & { baseUrl: string }
 
-export interface WidgetSettingsPatch {
-  enabled?: boolean
-  supportEmail?: string
-  disabledBuiltins?: string[]
-  customRules?: { id?: string; scenario: string; enabled: boolean }[]
-}
+export type WidgetSettingsPatch = UpdateWidgetSettingsInput
 
-// Client-side state for /dashboard/settings/widget, backed by /api/admin/widget.
-// Every save posts the whole rule list rather than a diff — the endpoint merges
-// against the stored row, so a partial body would silently keep stale rules.
+// Included rule lists replace the stored lists, so callers must send the whole
+// list for each included field, rather than only the rules they changed.
 export function useWidgetSettings() {
   const settings = ref<WidgetSettingsResponse | null>(null)
   const loading = ref(true)
@@ -73,9 +68,8 @@ export function useWidgetSettings() {
     ]
   })
 
-  // Each mutation sends only the half it touched. Sending both would make every
-  // save a full overwrite: a stale copy of the untouched half would silently
-  // revert whatever the previous save wrote to it.
+  // The API stores these lists separately. The assistant settings card combines
+  // both patches so its rule edits are saved together with the other fields.
   type FlatRule = { id: string; scenario: string; enabled: boolean; builtin: boolean }
 
   function builtinsPatch(rules: FlatRule[]): WidgetSettingsPatch {

@@ -9,6 +9,15 @@ type OgPage =
   | { kind: 'roadmap' }
   | { kind: 'changelogList' }
   | { kind: 'post', title: MaybeRefOrGetter<string | undefined>, content: MaybeRefOrGetter<string | undefined> }
+  | { kind: 'helpHome' }
+  | { kind: 'helpCollection', title: MaybeRefOrGetter<string | undefined>, description: MaybeRefOrGetter<string | null | undefined> }
+  | {
+      kind: 'helpArticle'
+      title: MaybeRefOrGetter<string | undefined>
+      description: MaybeRefOrGetter<string | null | undefined>
+      content: MaybeRefOrGetter<string | undefined>
+      publishedAt?: MaybeRefOrGetter<string | undefined>
+    }
   | {
       kind: 'changelogEntry'
       title: MaybeRefOrGetter<string | undefined>
@@ -56,6 +65,32 @@ export function usePageOg(page: OgPage) {
             : `The latest product updates, improvements, and fixes from ${name}.`,
           ogType: 'website',
         }
+      case 'helpHome':
+        return {
+          title: t('seo.helpTitle', { name }),
+          description: isDefault
+            ? 'Guides and answers to the questions people ask most.'
+            : `Guides and answers to the questions ${name} users ask most.`,
+          ogType: 'website',
+        }
+      case 'helpCollection': {
+        const pageTitle = (toValue(page.title) ?? '') || t('seo.helpFallback')
+        return {
+          title: t('seo.helpTitleWithOrg', { title: pageTitle, name }),
+          description: toValue(page.description) || `${pageTitle} — ${name} Help Center.`,
+          ogType: 'website',
+        }
+      }
+      case 'helpArticle': {
+        const pageTitle = (toValue(page.title) ?? '') || t('seo.helpFallback')
+        const body = toValue(page.content) ?? ''
+        return {
+          title: t('seo.helpTitleWithOrg', { title: pageTitle, name }),
+          description: toValue(page.description) || (body ? generateExcerpt(body, 155) : ''),
+          ogType: 'article',
+          publishedTime: toValue(page.publishedAt),
+        }
+      }
       case 'post': {
         const pageTitle = (toValue(page.title) ?? '') || t('seo.postFallback')
         const body = toValue(page.content) ?? ''

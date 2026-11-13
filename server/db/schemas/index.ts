@@ -1,6 +1,10 @@
-import { pgTable, uuid, text, varchar, integer, timestamp, index, uniqueIndex, primaryKey, jsonb, customType } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, text, varchar, integer, timestamp, index, uniqueIndex, primaryKey, jsonb, customType, foreignKey } from 'drizzle-orm/pg-core'
 import { relations, sql } from 'drizzle-orm'
 import { uuidv7 } from 'uuidv7'
+import { conversation } from './widget'
+import { user, session, account, organization, member, invitation } from './auth'
+
+export { conversationItem, agentRun } from './agent'
 
 // Auth + organization table definitions and relations.
 export {
@@ -25,6 +29,8 @@ export {
   postSubscription,
 } from './notifications'
 export type { NotificationPayload } from './notifications'
+export { memberPreference } from './member-preferences'
+export { mcpConsentOrganization, mcpAuditLog } from './mcp'
 export {
   organizationWidget,
   organizationWidgetRelations,
@@ -33,7 +39,12 @@ export {
   message,
 } from './widget'
 export type { WidgetCustomRule } from './widget'
-import { user, session, account, organization, member, invitation } from './auth'
+export {
+  helpCollection,
+  helpArticle,
+  helpCollectionRelations,
+  helpArticleRelations,
+} from './help'
 
 // Custom type for pgvector's vector column
 const vector = customType<{ data: number[]; driverParam: string }>({
@@ -44,7 +55,7 @@ const vector = customType<{ data: number[]; driverParam: string }>({
     return `[${value.join(',')}]`
   },
   fromDriver(value: string): number[] {
-    return value.replace(/[\[\]]/g, '').split(',').map(Number)
+    return value.replace(/[[\]]/g, '').split(',').map(Number)
   },
 })
 
@@ -63,6 +74,7 @@ export const board = pgTable('board', {
 ])
 
 export const post = pgTable('post', {
+  sourceConversationId: uuid('source_conversation_id'),
   id: uuid().primaryKey().$defaultFn(() => uuidv7()),
   orgId: text('org_id').notNull(),
   boardId: uuid('board_id'),
@@ -79,6 +91,8 @@ export const post = pgTable('post', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 }, (t) => [
+  foreignKey({ name: 'post_source_conversation_fk', columns: [t.orgId, t.sourceConversationId], foreignColumns: [conversation.orgId, conversation.id] }),
+  index('idx_post_source_conversation').on(t.orgId, t.sourceConversationId).where(sql`${t.sourceConversationId} IS NOT NULL`),
   // Public: All Feedback + Recent
   index('idx_post_org_created').on(t.orgId, sql`${t.createdAt} DESC`, sql`${t.id} DESC`),
   // Public: All Feedback + Top
@@ -269,3 +283,7 @@ export const changelogReactionRelations = relations(changelogReaction, ({ one })
   changelog: one(changelog, { fields: [changelogReaction.changelogId], references: [changelog.id] }),
   user: one(user, { fields: [changelogReaction.userId], references: [user.id] }),
 }))
+export * from './scheduler'
+
+export * from './oauth'
+export * from './help-index'

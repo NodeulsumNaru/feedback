@@ -1,7 +1,32 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 import { createResolver } from '@nuxt/kit'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
+import { HELP_COLLECTION_ICONS } from './shared/constants/help'
 
 const resolver = createResolver(import.meta.url)
+const require = createRequire(import.meta.url)
+const mastraPackage = require.resolve('@mastra/core/package.json')
+const mastraRequire = createRequire(mastraPackage)
+const mastraDependencies = JSON.parse(readFileSync(mastraPackage, 'utf8')).dependencies as Record<string, string>
+const mastraTraceInclude: string[] = []
+const mastraTraceAlias: Record<string, string> = {}
+
+// Nitro traces canonical package names; Mastra imports versioned npm aliases.
+for (const [alias, specifier] of Object.entries(mastraDependencies)) {
+  if (!specifier.startsWith('npm:')) continue
+  const entry = mastraRequire.resolve(alias)
+  const packageRoot = resolve(dirname(entry), '..')
+  const pkg = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8')) as {
+    name: string, version: string, exports?: Record<string, { import?: string }>
+  }
+  mastraTraceInclude.push(entry)
+  const esmEntry = pkg.exports?.['.']?.import
+  if (esmEntry) mastraTraceInclude.push(resolve(packageRoot, esmEntry))
+  mastraTraceAlias[pkg.name] = alias
+  mastraTraceAlias[`.nitro/${pkg.name}@${pkg.version}`] = alias
+}
 
 export default defineNuxtConfig({
   // `$meta.name` makes Nuxt auto-generate a `#layers/feedlog` alias pointing
@@ -123,6 +148,17 @@ export default defineNuxtConfig({
   // it is worth caching — but briefly: a deploy rotates the asset hashes the
   // shell points at, and a stale one asks for chunks the new image never built.
   routeRules: {
+    // Functional pages are excluded from discovery and carry a noindex response.
+    // Nuxt SEO applies these rules to configured locale prefixes as well.
+    '/dashboard/**': { sitemap: false, robots: false },
+    '/auth/**': { sitemap: false, robots: false },
+    '/invite': { sitemap: false, robots: false },
+    '/reset-password': { sitemap: false, robots: false },
+    '/verified': { sitemap: false, robots: false },
+    '/mcp/**': { sitemap: false, robots: false },
+    '/sso/**': { sitemap: false, robots: false },
+    '/setup': { sitemap: false, robots: false },
+    '/widget/**': { sitemap: false, robots: false },
     '/widget/embed': {
       ssr: false,
       headers: { 'cache-control': 'public, max-age=300, stale-while-revalidate=600' },
@@ -134,21 +170,21 @@ export default defineNuxtConfig({
   },
 
   icon: {
-    // Everything the widget frame draws. Bundled because the frame otherwise
-    // fetches two icon collections over HTTP while the visitor waits.
     clientBundle: {
-      icons: [
-        'lucide:alert-circle',
-        'lucide:arrow-left',
-        'lucide:arrow-up-right',
-        'lucide:chevron-up',
-        'lucide:globe',
-        'lucide:image',
-        'lucide:inbox',
-        'lucide:loader-2',
-        'lucide:message-circle',
-        'lucide:x',
-      ],
+      scan: {
+        // Resolve layer paths here; relative globs scan the extending app.
+        // Include TypeScript for navigation and status icon maps.
+        globInclude: [
+          'app/**/*.{vue,ts,js,tsx,jsx}',
+          'shared/**/*.{ts,js}',
+          'modules/**/*.{vue,ts,js,tsx,jsx}',
+          resolver.resolve('./app/**/*.{vue,ts,js,tsx,jsx}'),
+          resolver.resolve('./shared/**/*.{ts,js}'),
+          resolver.resolve('./modules/**/*.{vue,ts,js,tsx,jsx}'),
+        ],
+      },
+      // Collection icons come from stored values and are assembled at runtime.
+      icons: HELP_COLLECTION_ICONS.map(icon => `lucide:${icon}`),
     },
   },
 
@@ -156,7 +192,37 @@ export default defineNuxtConfig({
     transpile: ['reka-ui'],
   },
 
+  vite: {
+    ssr: {
+      // PostCSS uses nanoid's CommonJS entry through sanitize-html. Bundle it
+      // before Nitro can resolve the flattened import to the ESM-only version.
+      noExternal: ['nanoid'],
+    },
+  },
+
   nitro: {
+    externals: {
+      traceInclude: mastraTraceInclude,
+      traceAlias: mastraTraceAlias,
+    },
+    // Mastra's hashing dependency ships a native Wasm module for Workers.
+    experimental: { wasm: true, tasks: true },
+    tasks: {
+      'inbox:schedule': { handler: resolver.resolve('./server/tasks/inbox/schedule.ts') },
+    },
+    scheduledTasks: {
+      [!process.env.NITRO_PRESET?.startsWith('cloudflare') && !process.env.NITRO_PRESET?.startsWith('vercel') && process.env.VERCEL !== '1'
+        ? '*/5 * * * *' : '0 3 * * *']: ['inbox:schedule'],
+    },
+    vercel: { functions: { experimentalTriggers: [{ type: 'queue/v2beta', topic: 'feedlog-inbox', retryAfterSeconds: 60 }] } },
+    // Workers use pg's JavaScript client; its optional native addon is Node-only.
+    alias: process.env.NITRO_PRESET?.startsWith('cloudflare')
+      ? {
+          'pg-native': resolver.resolve('./server/lib/agent/pg-native-unavailable.cjs'),
+          'debug': resolver.resolve('./server/lib/debug-unavailable.cjs'),
+          '@vercel/queue': resolver.resolve('./server/lib/inbox/vercel-queue-unavailable.ts'),
+        }
+      : {},
     // Keep CF Workers' native node:fs / path / process available at runtime so
     // the cf-setup module can read bundled migration files via `/bundle/...`.
     // Without this, Nitro's unenv stub shadows them, reads return empty, and
@@ -175,23 +241,6 @@ export default defineNuxtConfig({
     },
     minify: false,
     sourceMap: false,
-  },
-
-  vite: {
-    ssr: {
-      // Exclude md-editor-v3 from SSR bundle — it's browser-only and very large (~2MB)
-      external: ['md-editor-v3'],
-    },
-    build: {
-      // Cloudflare Workers Builds에서 빌드 중 OOM(heap out of memory)이 나서,
-      // 메모리를 꽤 잡아먹는 소스맵 생성을 프로덕션 빌드에서는 끔.
-      sourcemap: false,
-    },
-  },
-
-  sourcemap: {
-    server: false,
-    client: false,
   },
 
   ogImage: {

@@ -1,9 +1,9 @@
-// Fixed-window IP rate limiter over Nitro storage (works on both the Node and
-// Cloudflare deployments; storage-backed so it holds across instances). Returns
+// Best-effort fixed-window limiter over Nitro storage. Scope depends on the
+// mounted storage driver; read/write increments are not atomic. Returns
 // true if the caller is WITHIN the limit, false once the window is exhausted.
 export async function checkRateLimit(
   key: string,
-  opts: { limit: number; windowSeconds: number },
+  opts: { limit: number; windowSeconds: number; failClosed?: boolean },
 ): Promise<boolean> {
   try {
     const storage = useStorage('ratelimit')
@@ -16,8 +16,8 @@ export async function checkRateLimit(
     return count <= opts.limit
   }
   catch {
-    // Fail open: a storage-backend hiccup (once a real KV/Redis driver is mounted)
-    // must never throw here — the public search must degrade, not 5xx.
-    return true
+    // Search stays available when the counter store errors. Callers that must
+    // not run without a counter pass failClosed.
+    return !opts.failClosed
   }
 }

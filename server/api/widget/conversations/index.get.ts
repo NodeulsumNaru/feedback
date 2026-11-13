@@ -1,5 +1,6 @@
-import { and, desc, eq, sql } from 'drizzle-orm'
-import { conversation, message } from '#layers/feedlog/server/db/schemas'
+import { handling } from '../../../../shared/inbox/state'
+import { and, desc, eq, gt, sql } from 'drizzle-orm'
+import { conversation, conversationItem } from '#layers/feedlog/server/db/schemas'
 import { withinRetention } from '#layers/feedlog/server/utils/conversation'
 
 export interface WidgetConversationItem {
@@ -8,7 +9,9 @@ export interface WidgetConversationItem {
   firstUserText: string | null
   preview: string | null
   lastMessageAt: Date
+  lastSeq: number
   unread: boolean
+  handling: 'ai' | 'human' | 'closed'
 }
 
 // The visitor's own conversations, newest first. Unpaged: a visitor accumulates
@@ -19,27 +22,27 @@ export default defineEventHandler(async (event): Promise<{ data: WidgetConversat
   const rows = await useDB()
     .select({
       id: conversation.id,
+      status: conversation.status,
       title: conversation.title,
       preview: conversation.previewText,
       lastMessageAt: conversation.lastMessageAt,
       unread: conversation.unread,
-      // The outer id is spelled out, not interpolated: with one table in the
-      // FROM, drizzle renders a column as a bare "id", which the subquery then
-      // resolves against message — a legal, always-false m.conversation_id = m.id.
-      firstUserText: sql<string | null>`CASE WHEN ${conversation.title} IS NULL THEN (
-        SELECT m.text FROM ${message} m
-        WHERE m.conversation_id = "conversation"."id" AND m.role = 'user'
-        ORDER BY m.created_at, m.id
-        LIMIT 1
-      ) END`,
+      lastSeq: conversation.lastSeq,
+      firstUserText: sql<string | null>`(
+        SELECT string_agg(part->>'text', ' ' ORDER BY ordinal)
+        FROM (SELECT content FROM ${conversationItem} WHERE conversation_id = "conversation"."id" AND author_type = 'customer' ORDER BY seq LIMIT 1) first_item,
+        jsonb_array_elements(first_item.content->'parts') WITH ORDINALITY AS p(part, ordinal)
+        WHERE part->>'type' = 'text'
+      )`,
     })
     .from(conversation)
     .where(and(
       eq(conversation.orgId, orgId),
       eq(conversation.userId, session.user.id),
       withinRetention(orgId),
+      gt(conversation.lastSeq, 0),
     ))
     .orderBy(desc(conversation.lastMessageAt), desc(conversation.id))
 
-  return { data: rows }
+  return { data: rows.map(({ status, ...row }) => ({ ...row, handling: handling(status) })) }
 })

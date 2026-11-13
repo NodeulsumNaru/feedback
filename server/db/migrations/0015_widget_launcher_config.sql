@@ -1,0 +1,1 @@
+ALTER TABLE "organization_widget" ADD COLUMN "launcher_config" jsonb DEFAULT '{"alignment":"right","bottomOffset":20,"sideOffset":20,"closeBehavior":"collapse"}'::jsonb NOT NULL;

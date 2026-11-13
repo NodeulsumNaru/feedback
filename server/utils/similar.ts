@@ -1,8 +1,9 @@
 import { sql, eq, and, ne, isNull } from 'drizzle-orm'
-import { post, postEmbedding, postSearch, vote } from '#layers/feedlog/server/db/schemas'
-import { user } from '#layers/feedlog/server/db/schemas/auth'
+import { post, postEmbedding, postSearch, vote } from '../db/schemas'
+import { user } from '../db/schemas/auth'
 
 interface SimilarSearchOptions {
+  embeddingTimeoutMs?: number
   orgId: string
   excludePostId?: string
   limit?: number
@@ -19,6 +20,21 @@ export interface SimilarPost {
   commentCount: number
   hasVoted: boolean
   author: { id: string; name: string | null; image: string | null; isAnonymous: boolean }
+}
+
+export async function searchSimilarByText(text: string, options: SimilarSearchOptions): Promise<SimilarPost[]> {
+  const plainText = stripMarkdown(text)
+  if (isEmbeddingEnabled()) {
+    try {
+      const embedding = await generateEmbedding(plainText, options.embeddingTimeoutMs)
+      const matches = await searchSimilarByEmbedding(embedding, options)
+      // Feedback can exist before its derived vector index has been populated.
+      if (matches.length) return matches
+    } catch {
+      // Keep search available when the embedding provider or vector query fails.
+    }
+  }
+  return searchSimilarByTrgm(plainText, options)
 }
 
 // Search similar posts using pgvector cosine distance
@@ -98,6 +114,10 @@ export async function searchSimilarByPostId(
   options: Omit<SimilarSearchOptions, 'excludePostId'>,
 ): Promise<SimilarPost[]> {
   const db = useDB()
+
+  const [source] = await db.select({ id: post.id }).from(post)
+    .where(and(eq(post.id, postId), eq(post.orgId, options.orgId))).limit(1)
+  if (!source) throw createError({ statusCode: 404, message: 'Feedback not found' })
 
   // Try embedding first
   if (isEmbeddingEnabled()) {

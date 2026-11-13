@@ -1,4 +1,4 @@
-import { and, count, eq } from 'drizzle-orm'
+import { and, count, eq, gt } from 'drizzle-orm'
 import { useDB } from './db'
 import { conversation, post, postUnread } from '../db/schemas'
 import { withinRetention } from './conversation'
@@ -22,6 +22,7 @@ export async function countWidgetBadge(orgId: string, userId: string): Promise<{
       eq(conversation.orgId, orgId),
       eq(conversation.userId, userId),
       eq(conversation.unread, true),
+      gt(conversation.lastSeq, 0),
       withinRetention(orgId),
     ))
 
