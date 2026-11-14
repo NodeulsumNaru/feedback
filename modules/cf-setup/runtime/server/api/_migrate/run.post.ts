@@ -4,6 +4,7 @@ import { systemAdminEmails } from '#layers/feedlog/server/utils/better-auth'
 import { probeDatabaseState, setCachedState } from '../../utils/migration-state'
 import { resolveConnectionString } from '../../utils/connection-string'
 import { isUpgradeAdmin } from '../../utils/upgrade-admin'
+import { setupKeyMatches } from '../../utils/setup-key'
 
 // Permission model:
 //   - bootstrap state (tracker absent or empty): anonymous allowed — no admin
@@ -14,6 +15,8 @@ import { isUpgradeAdmin } from '../../utils/upgrade-admin'
 //     role during sign-up. Upgrade migrations should not be triggerable by
 //     anonymous traffic.
 //   - migrated state: no-op, but still gated by admin to avoid info leaks.
+//   - Either gate also accepts the operator setup key (x-setup-key header, see
+//     utils/setup-key.ts), because signing in can be impossible mid-upgrade.
 
 function isCloudflare(): boolean {
   const p = import.meta.preset
@@ -36,17 +39,24 @@ export default defineEventHandler(async (event) => {
 
   let triggerSource = 'bootstrap'
   if (!isBootstrap) {
-    // A guest or a product SSO session is not a direct sign-in: its email was
-    // asserted by one organization, and migrations change the whole install.
-    const session = await requireLocalSession(event).catch(() => null)
-    if (!isUpgradeAdmin(session?.user, systemAdminEmails)) {
-      throw createError({
-        statusCode: 403,
-        statusMessage: 'Forbidden',
-        data: { code: 'REQUIRES_ADMIN', state: preSnapshot.state },
-      })
+    if (setupKeyMatches(getHeader(event, 'x-setup-key'))) {
+      triggerSource = 'setup-key'
     }
-    triggerSource = `admin:${session?.user?.id ?? 'unknown'}`
+    else {
+      const keyProvided = !!getHeader(event, 'x-setup-key')
+      // A guest or a product SSO session is not a direct sign-in: its email was
+      // asserted by one organization, and migrations change the whole install.
+      // Pending migrations can also make the session lookup itself fail.
+      const session = keyProvided ? null : await requireLocalSession(event).catch(() => null)
+      if (!isUpgradeAdmin(session?.user, systemAdminEmails)) {
+        throw createError({
+          statusCode: 403,
+          statusMessage: 'Forbidden',
+          data: { code: keyProvided ? 'INVALID_SETUP_KEY' : 'REQUIRES_ADMIN', state: preSnapshot.state },
+        })
+      }
+      triggerSource = `admin:${session?.user?.id ?? 'unknown'}`
+    }
   }
 
   console.log(`[cf-setup] migrate triggered: source=${triggerSource}, pre-state=${preSnapshot.state}`)

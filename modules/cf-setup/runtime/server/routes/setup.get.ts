@@ -121,6 +121,16 @@ const HTML = `<!doctype html>
   }
   button:hover { background: var(--primary-hover); }
   button:disabled { opacity: 0.5; cursor: default; }
+  .key-form { margin-top: 20px; text-align: left; }
+  .key-form label { display: block; font-size: 13.5px; font-weight: 600; margin-bottom: 6px; }
+  .key-form input {
+    width: 100%; padding: 10px 12px; font: inherit; font-size: 14px;
+    border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--text);
+  }
+  .key-form input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
+  .key-form .hint { margin-top: 8px; font-size: 12.5px; color: var(--text-muted); }
+  .key-form .hint code { font-size: 12px; background: var(--secondary); padding: 1px 5px; border-radius: var(--radius-sm); }
+  .key-form button { width: 100%; margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -138,6 +148,16 @@ const HTML = `<!doctype html>
       <div id="error-message"></div>
     </div>
 
+    <form id="key-form" class="key-form" hidden>
+      <label for="setup-key">Setup key</label>
+      <input id="setup-key" type="password" autocomplete="off" required />
+      <div class="hint">
+        Enter the Worker secret <code>SETUP_TOKEN</code>, or <code>BETTER_AUTH_SECRET</code> if you did not set one.
+        A signed-in administrator can also just press Try again.
+      </div>
+      <button type="submit" id="key-btn">Run update</button>
+    </form>
+
     <button id="retry-btn" hidden>Try again</button>
   </main>
 
@@ -152,6 +172,8 @@ const HTML = `<!doctype html>
   var errorBox = document.getElementById('error-box');
   var errorMessage = document.getElementById('error-message');
   var retryBtn = document.getElementById('retry-btn');
+  var keyForm = document.getElementById('key-form');
+  var keyInput = document.getElementById('setup-key');
 
   function showError(title, detail) {
     statusEl.innerHTML = '';
@@ -163,10 +185,11 @@ const HTML = `<!doctype html>
 
   function showSuccess() {
     statusEl.innerHTML = '<div class="check" aria-hidden="true">&#10003;</div><div class="success-text">All set. Taking you in&hellip;</div>';
-    setTimeout(function () { location.href = redirectTo; }, 3000);
+    setTimeout(function () { location.href = redirectTo; }, 600);
   }
 
   function poll() {
+    keyForm.hidden = true;
     retryBtn.hidden = true;
     errorBox.hidden = true;
     statusEl.innerHTML = '<div class="spinner" aria-hidden="true"></div><div class="status-text" id="status-text">Preparing&hellip;</div>';
@@ -194,8 +217,11 @@ const HTML = `<!doctype html>
       });
   }
 
-  function runMigration(requiresAdmin) {
-    fetch('/api/_migrate/run', { method: 'POST', headers: { accept: 'application/json' } })
+  function runMigration(requiresAdmin, setupKey) {
+    var headers = { accept: 'application/json' };
+    if (setupKey) headers['x-setup-key'] = setupKey;
+    statusEl.innerHTML = '<div class="spinner" aria-hidden="true"></div><div class="status-text">Updating the database&hellip;</div>';
+    fetch('/api/_migrate/run', { method: 'POST', headers: headers })
       .then(function (r) {
         if (r.ok) return r.json();
         return r.json().then(function (body) { throw { status: r.status, body: body }; });
@@ -203,8 +229,13 @@ const HTML = `<!doctype html>
       .then(function () { showSuccess(); })
       .catch(function (err) {
         var code = err && err.body && err.body.data && err.body.data.code;
-        if (code === 'REQUIRES_ADMIN') {
-          showError('Administrator required', 'This update must be confirmed by an administrator. Please sign in and return to this page.');
+        if (code === 'REQUIRES_ADMIN' || code === 'INVALID_SETUP_KEY') {
+          showError('Administrator confirmation required', code === 'INVALID_SETUP_KEY'
+            ? 'That setup key is not correct.'
+            : 'This update changes the database, so it must be confirmed with the setup key.');
+          keyForm.hidden = false;
+          keyInput.value = '';
+          keyInput.focus();
         } else {
           var msg = (err && err.body && err.body.message) || (err && err.message) || String(err);
           showError('Setup did not finish', msg);
@@ -212,6 +243,14 @@ const HTML = `<!doctype html>
       });
   }
 
+  keyForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var key = keyInput.value;
+    keyForm.hidden = true;
+    errorBox.hidden = true;
+    retryBtn.hidden = true;
+    runMigration(true, key);
+  });
   retryBtn.addEventListener('click', poll);
   poll();
 })();
