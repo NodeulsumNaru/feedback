@@ -29,6 +29,9 @@ export const DEFERRED_PACKAGES = [
 const matches = (id: string) => DEFERRED_PACKAGES.some(p =>
   p.endsWith('/') ? id.startsWith(p) : id === p || id.startsWith(`${p}/`))
 
+// syncBuiltinAliasesToWrangler()가 만든 전역 prelude 파일 경로 (rollup:before에서 설정)
+let preludePath: string | undefined
+
 export function deferToWrangler(): Plugin {
   return {
     name: 'feedback:defer-to-wrangler',
@@ -38,6 +41,13 @@ export function deferToWrangler(): Plugin {
         if (matches(source)) return { id: source, external: true }
         return null
       },
+    },
+    // 엔트리 맨 앞에서 prelude를 import → 다른 어떤 모듈보다 먼저 평가됨.
+    // (Nitro의 폴리필 코드는 chunks/nitro/nitro.mjs 본문에 있어서, 그 청크가 import하는
+    //  pg 같은 외부 패키지가 폴리필보다 먼저 실행되어 `Buffer is not defined`가 났음)
+    renderChunk(code, chunk) {
+      if (!chunk.isEntry || !preludePath) return null
+      return { code: `import ${JSON.stringify(preludePath)};\n${code}`, map: null }
     },
   }
 }
@@ -71,6 +81,21 @@ export async function syncBuiltinAliasesToWrangler(nitro: Nitro) {
     writeFileSync(file, `export * from '${target}'\nexport { default } from '${target}'\n`)
     return file
   }
+  // Nitro는 Rollup inject로 `Buffer`·`process`·`global` 같은 전역을 자기가 번들한
+  // 코드에만 넣어준다. wrangler로 넘긴 패키지(pg 등)는 모듈 최상단에서 이 전역을 바로
+  // 쓰므로, 같은 unenv 설정으로 전역을 먼저 채워두는 prelude 모듈을 만든다.
+  const lines: string[] = env.polyfill.map(p => `import ${JSON.stringify(p)}`)
+  Object.entries(env.inject).forEach(([name, spec], i) => {
+    const [from, exp] = Array.isArray(spec) ? spec : [spec, 'default']
+    const local = `__g${i}`
+    lines.push(exp === 'default'
+      ? `import ${local} from ${JSON.stringify(from)}`
+      : `import { ${exp} as ${local} } from ${JSON.stringify(from)}`)
+    lines.push(`if (globalThis.${name} === undefined) globalThis.${name} = ${local}`)
+  })
+  preludePath = join(shimDir, 'globals-prelude.mjs')
+  writeFileSync(preludePath, `${lines.join('\n')}\n`)
+
   const alias: Record<string, string> = {}
   for (const name of builtinModules) {
     if (name.startsWith('_')) continue
@@ -82,6 +107,9 @@ export async function syncBuiltinAliasesToWrangler(nitro: Nitro) {
     alias[bare] = toPath(target)
     // workerd에 없는 모듈(node:child_process 등)은 node: 접두사로 import해도 폴리필로
     if (target !== `node:${bare}`) alias[`node:${bare}`] = toPath(target)
+    // Nitro의 workerd 폴리필(prelude가 import하는 process.mjs 등)은 원본 네이티브 모듈을
+    // `#workerd/node:xxx`로 부름 → Nitro가 Rollup에서 하던 것처럼 node:xxx로 연결
+    alias[`#workerd/node:${bare}`] = toPath(`node:${bare}`)
   }
   const cf = (nitro.options.cloudflare ||= {} as NonNullable<Nitro['options']['cloudflare']>)
   const wrangler = (cf.wrangler ||= {}) as { alias?: Record<string, string> }
