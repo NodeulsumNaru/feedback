@@ -1,0 +1,54 @@
+.help-article-styled .md-editor {
+  background: transparent;
+}
+.help-article-styled .md-editor-preview-wrapper {
+  padding: 0;
+}
+.help-article-styled .md-editor-preview p {
+  font-size: 15px;
+  line-height: 26px;
+  margin: 0 0 16px;
+}
+.help-article-styled .md-editor-preview h2 {
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 700;
+  margin: 32px 0 12px;
+}
+.help-article-styled .md-editor-preview h3 {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 700;
+  margin: 22px 0 10px;
+}
+.help-article-styled .md-editor-preview :is(h4, h5, h6) {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 700;
+  margin: 18px 0 8px;
+}
+.help-article-styled .md-editor-preview :is(h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+.help-article-styled .md-editor-preview :is(ul, ol) {
+  padding-left: 20px;
+  margin: 0 0 16px;
+}
+.help-article-styled .md-editor-preview ul {
+  list-style-type: disc;
+}
+.help-article-styled .md-editor-preview ol {
+  list-style-type: decimal;
+}
+.help-article-styled .md-editor-preview li {
+  font-size: 15px;
+  line-height: 26px;
+  margin-bottom: 6px;
+}
+.help-article-styled .md-editor-preview code:not(pre code) {
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--secondary);
+  color: var(--primary);
+}

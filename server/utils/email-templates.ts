@@ -6,15 +6,42 @@ import { normalizeBrandHex, pickBrandForegroundHex } from '../../shared/utils/br
 const BRAND_COLOR = '#C45A46'
 const FONT_STACK = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`
 
-function layout({ preheader, content }: { preheader: string; content: string }): string {
+export function renderInboxReplyEmail({ reply, productName, topic, url }: { reply: string; productName: string; topic: string; url?: string }) {
+  const intro = topic ? `You have a reply about ${topic} from ${productName}.` : `You have a reply from ${productName}.`
+  const hint = `Open the support chat in ${productName} to reply.`
+  const text = [intro, reply, url ? `Continue conversation: ${url}` : '', hint].filter(Boolean).join('\n\n')
+  return { text, html: layout({ brandName: productName, preheader: intro, content: `<p>${escapeHtml(intro)}</p><p style="white-space:pre-wrap">${escapeHtml(reply)}</p>${url ? actionButton(escapeHtml(url), 'Continue conversation') : ''}<p>${escapeHtml(hint)}</p>` }) }
+}
+
+export interface HandoffEmailContext {
+  customerName: string; customerEmail?: string; reason: string; summary?: string; lastMessage: string; imageCount: number
+}
+export function renderInboxHandoffEmail({ productName, url, customerName, customerEmail, reason, summary, lastMessage, imageCount }: HandoffEmailContext & { productName: string; url: string }) {
+  const subject = `${productName}: ${customerName} needs human support`.replace(/[\r\n]/g, ' ').slice(0, 200)
+  const intro = `${customerName} needs your help`
+  const attachment = imageCount ? `${imageCount} image${imageCount === 1 ? '' : 's'} attached · View in the conversation` : ''
+  const content = `<p style="color:#737985;font-size:13px;margin-bottom:6px">${escapeHtml(reason)}</p>
+    <h1 style="font-size:23px;line-height:1.35;margin:0 0 20px">${escapeHtml(intro)}</h1>
+    <p style="border-bottom:1px solid #e5e7eb;padding-bottom:20px"><strong>${escapeHtml(customerName)}</strong>${customerEmail ? ` <span style="color:#737985">${escapeHtml(customerEmail)}</span>` : ''}</p>
+    ${summary ? `<p style="color:#737985;font-size:12px;font-weight:600;margin-bottom:6px">ISSUE SUMMARY · AI</p><p style="white-space:pre-wrap">${escapeHtml(summary)}</p>` : ''}
+    <p style="color:#737985;font-size:12px;font-weight:600;margin-bottom:6px">LATEST CUSTOMER MESSAGE</p>
+    ${lastMessage ? `<p style="white-space:pre-wrap;background:#f7f7f6;border-left:3px solid #dbd7d1;padding:14px 18px">${escapeHtml(lastMessage)}</p>` : ''}
+    ${attachment ? `<p style="color:#737985;font-size:12px">${attachment}</p>` : ''}
+    ${actionButton(escapeHtml(url), 'View conversation →')}
+    <p style="color:#737985;font-size:12px">Open this conversation in Inbox to review and reply.</p>`
+  return { subject, text: [intro, customerEmail, reason, summary ? `Issue summary (AI): ${summary}` : '', lastMessage ? `Latest customer message:\n${lastMessage}` : '', attachment, `View conversation: ${url}`].filter(Boolean).join('\n\n'),
+    html: layout({ brandName: productName, preheader: summary || lastMessage || attachment, content }) }
+}
+
+function layout({ preheader, content, brandName }: { preheader: string; content: string; brandName?: string }): string {
   return `
 <div style="font-family: ${FONT_STACK}; max-width: 600px; margin: 0 auto; padding: 32px 24px; color: #111827; line-height: 1.55;">
-  <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all;">${preheader}</div>
+  <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all;">${brandName ? escapeHtml(preheader) : preheader}</div>
   <div style="padding-bottom: 20px; border-bottom: 1px solid #e5e7eb; margin-bottom: 24px;">
-    <span style="font-size: 20px; font-weight: 700; color: ${BRAND_COLOR}; letter-spacing: -0.01em;">FeedLog</span>
+    <span style="font-size: 20px; font-weight: 700; color: ${BRAND_COLOR}; letter-spacing: -0.01em;">${brandName ? escapeHtml(brandName) : 'FeedLog'}</span>
   </div>
   ${content}
-  ${signature()}
+  ${brandName ? `<p style="border-top: 1px solid #e5e7eb; padding-top: 20px; color: #6b7280; font-size: 13px;">&mdash; ${escapeHtml(brandName)} Support</p>` : signature()}
 </div>
 `
 }
@@ -131,9 +158,7 @@ const FOOTER_REASON = 'You\'re receiving this because of your activity on this F
 const ADMIN_FOOTER_REASON = 'You\'re receiving this because you manage this FeedLog board.'
 
 // Gray page → centered FeedLog wordmark → white rounded card → centered footer.
-// No links in the footer; the physical postal address (CAN-SPAM) is a pre-launch
-// item, not fabricated here.
-function notificationShell(cardInner: string, preheader: string, footerReason: string): string {
+function notificationShell(cardInner: string, preheader: string, footerReason: string, preferencesUrl?: string): string {
   return `
 <div style="background: #f6f7fb; padding: 40px 16px; font-family: ${FONT_STACK};">
   <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all;">${escapeHtml(preheader)}</div>
@@ -146,6 +171,7 @@ ${cardInner}
     </div>
     <div style="text-align: center; padding: 24px 8px 0; color: #9ca3af; font-size: 12px; line-height: 1.6;">
       <p style="margin: 0;">${footerReason}</p>
+      ${preferencesUrl ? `<p style="margin: 8px 0 0;"><a href="${escapeHtml(preferencesUrl)}" style="color: #6b7280; text-decoration: underline;">Manage email notifications</a></p>` : ''}
     </div>
   </div>
 </div>`
@@ -222,6 +248,7 @@ export function renderNotificationEmail(input: {
   typeKey: string
   postTitle?: string
   postUrl: string
+  preferencesUrl?: string
   to?: string
   note?: string
   snippet?: string
@@ -260,9 +287,11 @@ export function renderNotificationEmail(input: {
   }
 
   const brand = normalizeBrandHex(input.brandColor)
-  const html = notificationShell(card.html.replaceAll('{{postUrl}}', input.postUrl), preheader, footerReason)
+  const preferencesUrl = input.typeKey === 'post.created' || input.typeKey === 'post.user_commented'
+    ? input.preferencesUrl : undefined
+  const html = notificationShell(card.html.replaceAll('{{postUrl}}', escapeHtml(input.postUrl)), preheader, footerReason, preferencesUrl)
     .replaceAll('{{brand}}', brand)
     .replaceAll('{{brandFg}}', pickBrandForegroundHex(brand))
-  const text = `${card.text}\n\nView: ${input.postUrl}\n\n—\n${footerReason}`
+  const text = `${card.text}\n\nView: ${input.postUrl}\n\n—\n${footerReason}${preferencesUrl ? `\nManage email notifications: ${preferencesUrl}` : ''}`
   return { subject: card.subject, html, text }
 }

@@ -37,11 +37,40 @@ const form = reactive({
   password: '',
 })
 
+// Set when the server refused the current session. Shown on the sign-in states
+// only — deeper in a sub-flow the prompt is just noise.
+const { reason } = useLoginModal()
+
+// Named in the prompt: readers recognise the product they came from, where a
+// generic mention of it means nothing.
+const { data: reasonSession } = useAuthSession()
+const orgCtx = useOrgContext()
+const vouchingOrg = computed(() => {
+  const list = (reasonSession.value as { orgList?: { orgId: string, name: string }[] } | null)?.orgList ?? []
+  return list.find(o => o.orgId === orgCtx.value.orgId)?.name ?? orgCtx.value.orgSlug
+})
+
+// Retitle both sign-in states: "Sign in", right after being told they already
+// are, reads as a contradiction — and the title is read first.
+const signInTitle = computed(() => reason.value ? t('auth.localAuthTitle') : t('auth.signIn.title'))
+const signInEmailTitle = computed(() => reason.value ? t('auth.localAuthTitle') : t('auth.signInEmail.title'))
+const reasonText = computed(() => reason.value ? t(reason.value, { org: vouchingOrg.value }) : '')
+const signInSubtitle = computed(() => reasonText.value || t('auth.signIn.subtitle'))
+
 // Reset state when modal opens/closes
 watch(open, (val) => {
   if (val) {
     state.value = initialState()
     resetForm()
+    // Offer the address already on screen rather than make them recall it; still
+    // editable. Guests are excluded — their email is a generated placeholder.
+    if (reason.value) {
+      const current = reasonSession.value?.user as { email?: string, isAnonymous?: boolean } | undefined
+      if (current?.email && !current.isAnonymous) form.email = current.email
+    }
+  }
+  else {
+    reason.value = null
   }
 })
 
@@ -319,8 +348,8 @@ const showPassword = ref(false)
       <template v-if="state === 'sign-in'">
         <DialogHeader class="text-center space-y-2">
           <AppLogo :size="48" class="mx-auto" />
-          <DialogTitle class="font-heading text-xl">{{ $t('auth.signIn.title') }}</DialogTitle>
-          <DialogDescription>{{ $t('auth.signIn.subtitle') }}</DialogDescription>
+          <DialogTitle class="font-heading text-xl">{{ signInTitle }}</DialogTitle>
+          <DialogDescription>{{ signInSubtitle }}</DialogDescription>
         </DialogHeader>
 
         <div v-if="hasOAuth" class="space-y-2 pt-2">
@@ -375,7 +404,8 @@ const showPassword = ref(false)
       <template v-if="state === 'sign-in-email'">
         <DialogHeader class="text-center space-y-2">
           <AppLogo :size="48" class="mx-auto" />
-          <DialogTitle class="font-heading text-xl">{{ $t('auth.signInEmail.title') }}</DialogTitle>
+          <DialogTitle class="font-heading text-xl">{{ signInEmailTitle }}</DialogTitle>
+          <DialogDescription v-if="reasonText">{{ reasonText }}</DialogDescription>
         </DialogHeader>
         <form class="space-y-4 pt-2" @submit.prevent="handleSignIn">
           <div class="space-y-2">

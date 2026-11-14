@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { WidgetFeedbackItem } from '~~/server/api/widget/feedback/index.get'
+import type { WidgetFeedbackItem } from '#layers/feedlog/server/api/widget/feedback/index.get'
 
 const props = defineProps<{
   items: WidgetFeedbackItem[]
@@ -42,7 +42,7 @@ onUnmounted(() => listObserver?.disconnect())
 </script>
 
 <template>
-  <div ref="bodyEl" class="flex-1 overflow-y-auto bg-background">
+  <div ref="bodyEl" class="min-h-0 flex-1 overflow-y-auto overscroll-y-contain bg-background">
     <p v-if="!items.length && !loading" class="px-5 py-8 text-xs text-muted-foreground text-center">
       {{ t('widget.noFeedback') }}
     </p>

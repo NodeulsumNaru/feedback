@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DisplayableAuthor } from '~/composables/useAuthorDisplay'
+import { resolveAttachmentUrl } from '~/utils/attachment'
 import { avatarHue } from '#layers/feedlog/shared/utils/identity'
 
 // The one place that knows what a person looks like in this product.
@@ -45,7 +46,8 @@ const SIZES = {
 const dims = computed(() => SIZES[props.size])
 const hue = computed(() => (props.author?.id ? avatarHue(props.author.id) : 0))
 const isGuest = computed(() => !!props.author?.isAnonymous)
-const hasImage = computed(() => !!props.author?.image)
+const imageUrl = computed(() => resolveAttachmentUrl(props.author?.image))
+const hasImage = computed(() => !!imageUrl.value)
 </script>
 
 <template>
@@ -62,7 +64,7 @@ const hasImage = computed(() => !!props.author?.image)
     ]"
     :style="hasImage ? undefined : { '--avatar-hue': hue }"
   >
-    <img v-if="hasImage" :src="author!.image!" alt="" class="w-full h-full object-cover" referrerpolicy="no-referrer">
+    <img v-if="hasImage" :src="imageUrl" alt="" class="w-full h-full object-cover" referrerpolicy="no-referrer">
     <Icon v-else-if="isGuest" name="lucide:user-round" :size="dims.icon" />
     <template v-else>{{ authorInitials(author) }}</template>
   </span>

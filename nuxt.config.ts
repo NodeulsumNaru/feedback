@@ -1,7 +1,41 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 import { createResolver } from '@nuxt/kit'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
+import { HELP_COLLECTION_ICONS } from './shared/constants/help'
+import { deferToWrangler, syncBuiltinAliasesToWrangler } from './scripts/defer-to-wrangler'
 
 const resolver = createResolver(import.meta.url)
+// NITRO_PRESET이 없어도 Cloudflare Workers Builds 안(WORKERS_CI=1)이면 Nitro가
+// cloudflare 프리셋을 자동 선택하므로 같이 취급
+const isCloudflare = !!process.env.NITRO_PRESET?.startsWith('cloudflare') || process.env.WORKERS_CI === '1'
+// pg 등이 wrangler(esbuild)로 번들될 때도 Nitro alias와 같은 대체를 쓰도록 공유
+const workerStubs = {
+  'pg-native': resolver.resolve('./server/lib/agent/pg-native-unavailable.cjs'),
+  'debug': resolver.resolve('./server/lib/debug-unavailable.cjs'),
+}
+const require = createRequire(import.meta.url)
+const mastraPackage = require.resolve('@mastra/core/package.json')
+const mastraRequire = createRequire(mastraPackage)
+const mastraDependencies = JSON.parse(readFileSync(mastraPackage, 'utf8')).dependencies as Record<string, string>
+const mastraTraceInclude: string[] = []
+const mastraTraceAlias: Record<string, string> = {}
+
+// Nitro traces canonical package names; Mastra imports versioned npm aliases.
+for (const [alias, specifier] of Object.entries(mastraDependencies)) {
+  if (!specifier.startsWith('npm:')) continue
+  const entry = mastraRequire.resolve(alias)
+  const packageRoot = resolve(dirname(entry), '..')
+  const pkg = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8')) as {
+    name: string, version: string, exports?: Record<string, { import?: string }>
+  }
+  mastraTraceInclude.push(entry)
+  const esmEntry = pkg.exports?.['.']?.import
+  if (esmEntry) mastraTraceInclude.push(resolve(packageRoot, esmEntry))
+  mastraTraceAlias[pkg.name] = alias
+  mastraTraceAlias[`.nitro/${pkg.name}@${pkg.version}`] = alias
+}
 
 export default defineNuxtConfig({
   // `$meta.name` makes Nuxt auto-generate a `#layers/feedlog` alias pointing
@@ -17,8 +51,20 @@ export default defineNuxtConfig({
   // directory name.
   $meta: { name: 'feedlog' },
 
+  // 저메모리 빌드(scripts/build-low-memory.mjs) 지원.
+  // Vite(client/server) 빌드가 끝난 뒤에도 ~1.3GB 힙이 해제되지 않은 채로 Nitro
+  // 번들링이 같은 프로세스에서 이어져서 피크 메모리가 4~6GB까지 올라감.
+  // buildCache로 Vite 결과물(.nuxt)을 캐시해두면 두 번째 프로세스는 Vite를 건너뛰고
+  // Nitro만 빌드하므로, 두 단계를 별도 프로세스로 나눠 각 단계 피크를 낮춤.
+  experimental: {
+    buildCache: process.env.NUXT_LOW_MEMORY_BUILD === '1',
+  },
+
   compatibilityDate: '2025-07-15',
-  devtools: { enabled: true },
+  // devtools는 로컬 개발용이라 배포 빌드엔 필요 없음. @nuxthub/core의 devtools
+  // 통합이 Prisma Studio 등 무거운 의존성을 끌고 와서 빌드 메모리를 키우므로
+  // 프로덕션 빌드에서는 끔.
+  devtools: { enabled: process.env.NODE_ENV !== 'production' },
 
   // NOTE: `#shared` is owned by the active Nuxt instance (the consumer), so
   // a downstream app extending this layer can place its own `shared/types/*`
@@ -120,6 +166,17 @@ export default defineNuxtConfig({
   // it is worth caching — but briefly: a deploy rotates the asset hashes the
   // shell points at, and a stale one asks for chunks the new image never built.
   routeRules: {
+    // Functional pages are excluded from discovery and carry a noindex response.
+    // Nuxt SEO applies these rules to configured locale prefixes as well.
+    '/dashboard/**': { sitemap: false, robots: false },
+    '/auth/**': { sitemap: false, robots: false },
+    '/invite': { sitemap: false, robots: false },
+    '/reset-password': { sitemap: false, robots: false },
+    '/verified': { sitemap: false, robots: false },
+    '/mcp/**': { sitemap: false, robots: false },
+    '/sso/**': { sitemap: false, robots: false },
+    '/setup': { sitemap: false, robots: false },
+    '/widget/**': { sitemap: false, robots: false },
     '/widget/embed': {
       ssr: false,
       headers: { 'cache-control': 'public, max-age=300, stale-while-revalidate=600' },
@@ -131,21 +188,21 @@ export default defineNuxtConfig({
   },
 
   icon: {
-    // Everything the widget frame draws. Bundled because the frame otherwise
-    // fetches two icon collections over HTTP while the visitor waits.
     clientBundle: {
-      icons: [
-        'lucide:alert-circle',
-        'lucide:arrow-left',
-        'lucide:arrow-up-right',
-        'lucide:chevron-up',
-        'lucide:globe',
-        'lucide:image',
-        'lucide:inbox',
-        'lucide:loader-2',
-        'lucide:message-circle',
-        'lucide:x',
-      ],
+      scan: {
+        // Resolve layer paths here; relative globs scan the extending app.
+        // Include TypeScript for navigation and status icon maps.
+        globInclude: [
+          'app/**/*.{vue,ts,js,tsx,jsx}',
+          'shared/**/*.{ts,js}',
+          'modules/**/*.{vue,ts,js,tsx,jsx}',
+          resolver.resolve('./app/**/*.{vue,ts,js,tsx,jsx}'),
+          resolver.resolve('./shared/**/*.{ts,js}'),
+          resolver.resolve('./modules/**/*.{vue,ts,js,tsx,jsx}'),
+        ],
+      },
+      // Collection icons come from stored values and are assembled at runtime.
+      icons: HELP_COLLECTION_ICONS.map(icon => `lucide:${icon}`),
     },
   },
 
@@ -153,7 +210,37 @@ export default defineNuxtConfig({
     transpile: ['reka-ui'],
   },
 
+  vite: {
+    ssr: {
+      // PostCSS uses nanoid's CommonJS entry through sanitize-html. Bundle it
+      // before Nitro can resolve the flattened import to the ESM-only version.
+      noExternal: ['nanoid'],
+    },
+    build: isCloudflare ? { rollupOptions: { cache: false, maxParallelFileOps: 8 } } : {},
+  },
+
   nitro: {
+    externals: {
+      traceInclude: mastraTraceInclude,
+      traceAlias: mastraTraceAlias,
+    },
+    // Mastra's hashing dependency ships a native Wasm module for Workers.
+    experimental: { wasm: true, tasks: true, legacyExternals: true },
+    tasks: {
+      'inbox:schedule': { handler: resolver.resolve('./server/tasks/inbox/schedule.ts') },
+    },
+    scheduledTasks: {
+      [!process.env.NITRO_PRESET?.startsWith('cloudflare') && !process.env.NITRO_PRESET?.startsWith('vercel') && process.env.VERCEL !== '1'
+        ? '*/5 * * * *' : '0 3 * * *']: ['inbox:schedule'],
+    },
+    vercel: { functions: { experimentalTriggers: [{ type: 'queue/v2beta', topic: 'feedlog-inbox', retryAfterSeconds: 60 }] } },
+    // Workers use pg's JavaScript client; its optional native addon is Node-only.
+    alias: isCloudflare
+      ? {
+          ...workerStubs,
+          '@vercel/queue': resolver.resolve('./server/lib/inbox/vercel-queue-unavailable.ts'),
+        }
+      : {},
     // Keep CF Workers' native node:fs / path / process available at runtime so
     // the cf-setup module can read bundled migration files via `/bundle/...`.
     // Without this, Nitro's unenv stub shadows them, reads return empty, and
@@ -161,24 +248,31 @@ export default defineNuxtConfig({
     unenv: {
       external: ['node:fs', 'node:fs/promises', 'node:path', 'node:process'],
     },
+    // 압축은 Nitro(Rollup+terser) 대신 wrangler(esbuild)에서 → 빌드 메모리 절약
+    minify: !isCloudflare,
+    sourceMap: isCloudflare ? false : undefined,
+    // 빌드 메모리 절감 (자세한 설명은 scripts/defer-to-wrangler.ts, scripts/build-low-memory.mjs)
+    // - cache: false → Rollup이 모든 모듈의 ESTree AST를 끝까지 들고 있지 않게 함
+    // - maxParallelFileOps → 동시에 읽어 들이는 파일 수 제한
+    // - Cloudflare에서는 무거운 의존성 번들을 wrangler(esbuild)로 넘김
+    rollupConfig: isCloudflare
+      ? { cache: false, maxParallelFileOps: 8, plugins: [deferToWrangler()] }
+      : {},
+    cloudflare: {
+      // deferToWrangler로 넘긴 패키지(pg 등) 안쪽 import에도 같은 대체 적용
+      // 압축도 wrangler(esbuild)가 담당 (Nitro minify를 끈 대신)
+      wrangler: { alias: workerStubs, minify: true },
+    },
+    hooks: {
+      'rollup:before': async (nitro) => {
+        // 1단계(Vite) 프로세스는 캐시 저장까지만 하고 종료 → Nitro는 새 프로세스에서
+        if (process.env.NUXT_LOW_MEMORY_BUILD_PHASE === 'vite') process.exit(0)
+        if (isCloudflare) await syncBuiltinAliasesToWrangler(nitro)
+      },
+    },
   },
 
-  vite: {
-    ssr: {
-      // Exclude md-editor-v3 from SSR bundle — it's browser-only and very large (~2MB)
-      external: ['md-editor-v3'],
-    },
-    build: {
-      // Cloudflare Workers Builds에서 빌드 중 OOM(heap out of memory)이 나서,
-      // 메모리를 꽤 잡아먹는 소스맵 생성을 프로덕션 빌드에서는 끔.
-      sourcemap: false,
-    },
-  },
-
-  sourcemap: {
-    server: false,
-    client: false,
-  },
+  sourcemap: isCloudflare ? { server: false, client: false } : undefined,
 
   ogImage: {
     enabled: false,

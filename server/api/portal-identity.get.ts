@@ -3,6 +3,8 @@ import type { ResolvedBranding } from '#layers/feedlog/shared/utils/branding'
 import { resolveBranding } from '#layers/feedlog/shared/utils/branding'
 import type { ResolvedGuestAccess } from '#layers/feedlog/shared/utils/guest'
 import { resolveGuestAccess } from '#layers/feedlog/shared/utils/guest'
+import type { ResolvedPortalModules } from '#layers/feedlog/shared/utils/portal-modules'
+import { resolvePortalModules } from '#layers/feedlog/shared/utils/portal-modules'
 
 function resolveLogoUrl(logo: string | null | undefined): string | null {
   if (!logo) return null
@@ -19,6 +21,7 @@ export default defineEventHandler(async (event): Promise<{
   isDefault: boolean
   branding: ResolvedBranding
   guest: ResolvedGuestAccess
+  modules: ResolvedPortalModules
 }> => {
   const slug = event.context.orgSlug ?? DEFAULT_ORG_SLUG
   const info = await getOrgInfo(slug)
@@ -32,5 +35,6 @@ export default defineEventHandler(async (event): Promise<{
     // Rides along so the portal knows, on first paint, whether a write should
     // mint a guest identity or open the sign-in modal.
     guest: resolveGuestAccess(info?.metadata),
+    modules: resolvePortalModules(info?.metadata),
   }
 })

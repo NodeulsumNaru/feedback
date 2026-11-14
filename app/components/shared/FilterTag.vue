@@ -36,18 +36,15 @@ const selectedLabel = computed(() => {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" class="min-w-[140px]">
-        <DropdownMenuItem
+        <FilterOptionItem
           v-for="opt in options"
           :key="opt.value"
-          class="cursor-pointer text-xs whitespace-nowrap"
-          :class="opt.value === modelValue ? 'text-primary font-bold' : ''"
+          class="whitespace-nowrap"
+          :selected="opt.value === modelValue"
           @select="modelValue = opt.value"
         >
-          <span class="w-4 shrink-0 flex items-center justify-center">
-            <Icon v-if="opt.value === modelValue" name="lucide:check" size="12" />
-          </span>
           {{ opt.label }}
-        </DropdownMenuItem>
+        </FilterOptionItem>
       </DropdownMenuContent>
     </DropdownMenu>
     <!-- Remove button -->

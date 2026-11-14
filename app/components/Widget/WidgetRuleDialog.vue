@@ -33,7 +33,9 @@ function submit() {
   <Dialog v-model:open="open">
     <DialogContent class="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle class="font-heading">{{ initial ? $t('settings.widget.editRule') : $t('settings.widget.addRule') }}</DialogTitle>
+        <DialogTitle class="font-heading">
+          {{ initial ? $t('settings.widget.editRule') : $t('settings.widget.addRule') }}
+        </DialogTitle>
       </DialogHeader>
 
       <div>
@@ -47,7 +49,9 @@ function submit() {
           @keydown.meta.enter="submit"
         />
         <div class="flex items-start justify-between gap-3 mt-1.5">
-          <p class="text-[11px] text-muted-foreground leading-snug">{{ $t('settings.widget.ruleHint') }}</p>
+          <p class="text-[11px] text-muted-foreground leading-snug">
+            {{ $t('settings.widget.ruleHint') }}
+          </p>
           <span
             class="text-[11px] tabular-nums shrink-0"
             :class="tooLong ? 'text-red-600 font-semibold' : 'text-muted-foreground'"
@@ -67,7 +71,7 @@ function submit() {
           class="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-xs font-heading font-bold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           @click="submit"
         >
-          {{ $t('settings.widget.save') }}
+          {{ $t('settings.widget.done') }}
         </button>
       </DialogFooter>
     </DialogContent>

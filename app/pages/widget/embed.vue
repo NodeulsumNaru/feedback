@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { resolveAttachmentUrl } from '~/utils/attachment'
-import { widgetEmbedKey } from '~/composables/useWidgetEmbed'
-import { widgetProtocolKey } from '~/composables/useWidgetProtocol'
-import type { WidgetFeedbackItem } from '~~/server/api/widget/feedback/index.get'
-import type { WidgetConversationItem } from '~~/server/api/widget/conversations/index.get'
+import { resolveAttachmentUrl } from '#layers/feedlog/app/utils/attachment'
+import { widgetEmbedKey } from '#layers/feedlog/app/composables/useWidgetEmbed'
+import { widgetProtocolKey } from '#layers/feedlog/app/composables/useWidgetProtocol'
+import { widgetResumeSchema, type WidgetChatResume } from '#layers/feedlog/app/composables/useWidgetResume'
+import type { WidgetFeedbackItem } from '#layers/feedlog/server/api/widget/feedback/index.get'
+import type { WidgetConversationItem } from '#layers/feedlog/server/api/widget/conversations/index.get'
 
 // /widget/embed — the FeedLog-hosted page the widget SDK loads in its iframe.
 //
@@ -17,6 +18,7 @@ const { t } = useI18n()
 const embed = useWidgetEmbed()
 const { status, allowGuest, widgetFetch, loadSession } = embed
 const protocol = useWidgetProtocol()
+const widgetLocale = useWidgetLocale(protocol.locale)
 provide(widgetEmbedKey, embed)
 provide(widgetProtocolKey, protocol)
 
@@ -25,7 +27,7 @@ provide(widgetProtocolKey, protocol)
 // a widget that flashes white inside a dark app is the reason this isn't
 // negotiated over postMessage after load.
 const themeParam = computed(() => {
-  const raw = route.query.theme
+  const raw = protocol.theme.value ?? route.query.theme
   return raw === 'dark' || raw === 'light' ? raw : 'auto'
 })
 const systemDark = ref(false)
@@ -54,7 +56,8 @@ const orgInitial = computed(() => org.value.name.trim().charAt(0).toUpperCase() 
 const productName = computed(() => org.value.name || t('widget.thisProduct'))
 
 useHead(() => ({
-  htmlAttrs: { class: isDark.value ? 'dark' : '' },
+  htmlAttrs: { class: `overflow-hidden overscroll-none${isDark.value ? ' dark' : ''}` },
+  bodyAttrs: { class: 'overflow-hidden overscroll-none' },
   script: themeParam.value === 'auto'
     ? [{
         key: 'widget-embed-auto-theme',
@@ -68,16 +71,64 @@ const view = ref<'conversations' | 'chat' | 'list'>('chat')
 const conversations = ref<WidgetConversationItem[]>([])
 const activeConversationId = ref<string | null>(null)
 const chatKey = ref(0)
+const savedChat = ref<WidgetChatResume | null>(null)
+const restoredChat = ref<WidgetChatResume | null>(null)
+const widgetRoot = ref<HTMLElement | null>(null)
+let scrollTop = 0
 let authed = false
+
+function rememberScroll(event: Event) {
+  const target = event.target
+  if (target instanceof HTMLElement && target.clientHeight > 0) scrollTop = target.scrollTop
+}
+
+protocol.onResume(() => ({
+  owner: embed.user.value?.email ?? null,
+  anonymous: !embed.user.value || embed.user.value.isAnonymous === true,
+  view: view.value,
+  conversationId: activeConversationId.value,
+  chat: savedChat.value ? JSON.parse(JSON.stringify(savedChat.value)) : null,
+  scrollTop,
+}), async (state) => {
+  const parsed = widgetResumeSchema.safeParse(state)
+  if (!parsed.success) return
+  const saved = parsed.data
+  // A guest may claim their own draft on login; a different signed-in account
+  // must never inherit the previous account's conversation or composer.
+  if (!saved.anonymous && saved.owner !== embed.user.value?.email) return
+  activeConversationId.value = saved.view === 'chat'
+    ? (saved.chat?.conversationId ?? saved.conversationId)
+    : saved.conversationId
+  restoredChat.value = saved.chat
+  savedChat.value = saved.chat
+  view.value = saved.view
+  await nextTick()
+  await document.fonts.ready
+  const body = widgetRoot.value?.querySelector<HTMLElement>('.overflow-y-auto')
+  if (body && saved.view !== 'chat') body.scrollTop = saved.scrollTop
+})
 
 function panelVisible() {
   return document.body.getBoundingClientRect().height > 0
 }
 
+function containWheel(event: WheelEvent) {
+  if (event.ctrlKey || !event.deltaY) return
+  // Some browsers ignore overscroll containment when iframe content has no scroll range.
+  for (const node of event.composedPath()) {
+    if (node instanceof HTMLElement) {
+      const { overflowY } = getComputedStyle(node)
+      if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) return
+    }
+    if (node === event.currentTarget) break
+  }
+  event.preventDefault()
+}
+
 const headerTitle = computed(() => {
   if (view.value === 'conversations') return t('widget.messages')
   if (view.value === 'list') return t('widget.myFeedback')
-  return t('widget.agentTitle')
+  return t('widget.agentTitle', { product: productName.value })
 })
 
 async function loadConversations() {
@@ -118,11 +169,12 @@ async function loadUnread() {
   catch { /* keep the last known count */ }
 }
 
-async function markConversationRead(id: string) {
+async function markConversationRead(id: string, lastSeq: number) {
   try {
-    applyBadge(await widgetFetch<BadgeCounts>(`/api/widget/conversations/${id}/read`, { method: 'POST' }))
+    const result = await widgetFetch<BadgeCounts & { cleared: boolean }>(`/api/widget/conversations/${id}/read`, { method: 'POST', body: JSON.stringify({ observed_last_seq: lastSeq }) })
+    applyBadge(result)
     const row = conversations.value.find(c => c.id === id)
-    if (row) row.unread = false
+    if (row && result.cleared) row.unread = false
   }
   catch { /* the dot stays; a later load will correct it */ }
 }
@@ -186,18 +238,20 @@ function onOpenFeedback() {
 function onOpenConversation(id: string) {
   activeConversationId.value = id
   view.value = 'chat'
-  void markConversationRead(id)
 }
 
-function onReplied(id: string) {
+function onReplied(id: string, lastSeq: number) {
+  if (view.value !== 'chat') return
+  activeConversationId.value = id
   if (!panelVisible()) {
     void loadUnread()
     return
   }
-  void markConversationRead(id)
+  void markConversationRead(id, lastSeq)
 }
 
 function onNewConversation() {
+  chatKey.value++
   activeConversationId.value = null
   view.value = 'chat'
 }
@@ -227,8 +281,7 @@ function watchPanelVisibility() {
     const now = (entry?.contentRect.height ?? 0) > 0
     if (now === shown) return
     shown = now
-    if (shown) void settleView()
-    else resetToRoot()
+    if (shown) void Promise.all([loadConversations(), loadUnread(), loadFeedback()])
   })
   panelObserver.observe(document.documentElement)
 }
@@ -237,7 +290,7 @@ function onFirstRender() {
   probeArmed.value = false
   if (!authed) return
   watchPanelVisibility()
-  void settleView()
+  void Promise.all([loadConversations(), loadUnread(), loadFeedback()])
 }
 
 // A guest who just sent their first message now has an identity, so the lists
@@ -264,16 +317,18 @@ onMounted(async () => {
   const config = $fetch<{
     org: { name: string, logo: string | null }
     allowGuest: boolean
+    imageMaxBytes?: number
     branding: { primary: string, primaryForeground: string }
   }>('/api/widget/config')
     .then((cfg) => {
       applyBrand(cfg.branding)
       org.value = cfg.org
       allowGuest.value = cfg.allowGuest
+      if (cfg.imageMaxBytes) embed.imageMaxBytes.value = cfg.imageMaxBytes
     })
     .catch(() => {})
 
-  const [signedIn] = await Promise.all([loadSession(), config])
+  const [signedIn] = await Promise.all([loadSession(), config, widgetLocale.init()])
   // Nobody yet, but writing is allowed: open on the composer rather than the
   // wall. The identity appears on the first send, not here.
   if (!signedIn && allowGuest.value) status.value = 'guest'
@@ -297,11 +352,11 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-background text-foreground">
+  <div ref="widgetRoot" class="relative h-dvh overflow-hidden flex flex-col bg-background text-foreground" @wheel="containWheel" @scroll.capture="rememberScroll">
     <span v-if="probeArmed" class="render-probe" aria-hidden="true" @animationstart="onFirstRender" />
 
     <!-- Header -->
-    <header class="h-16 px-4 border-b border-border bg-card flex items-center gap-2.5 shrink-0">
+    <header class="min-h-16 px-4 pt-[env(safe-area-inset-top)] border-b border-border bg-card flex items-center gap-2.5 shrink-0">
       <button
         v-if="view !== 'conversations'"
         class="w-7 h-7 shrink-0 hover:opacity-70 transition-opacity flex items-center justify-center text-primary"
@@ -330,9 +385,7 @@ onUnmounted(() => {
         <p v-if="view === 'list' && totalCount" class="mt-0.5 text-xs text-muted-foreground truncate">
           {{ t('widget.postCount', { count: totalCount }, totalCount) }}<template v-if="feedbackUnread"> · {{ t('widget.withUpdates', { count: feedbackUnread }, feedbackUnread) }}</template>
         </p>
-        <p v-else-if="view === 'chat' && org.name" class="mt-0.5 text-xs text-muted-foreground leading-snug line-clamp-2">
-          {{ t('widget.subtitle', { product: org.name }) }}
-        </p>
+
       </div>
       <button
         class="w-6.5 h-6.5 rounded-full bg-secondary hover:opacity-80 transition-opacity flex items-center justify-center text-primary shrink-0"
@@ -389,15 +442,23 @@ onUnmounted(() => {
         :key="chatKey"
         :product-name="productName"
         :open-id="activeConversationId"
+        :resume-state="restoredChat"
+        @state-change="savedChat = $event"
         @auth-required="onAuthRequired"
         @filed="onFiled"
         @replied="onReplied"
       />
     </KeepAlive>
 
-    <p v-if="status !== 'loading'" class="py-1.5 bg-card text-center text-[10.5px] text-muted-foreground shrink-0">
+    <a
+      v-if="status !== 'loading'"
+      href="https://feedlog.ai"
+      target="_blank"
+      rel="noopener"
+      class="block pt-1.5 pb-[max(6px,env(safe-area-inset-bottom))] bg-card text-center text-[10.5px] text-muted-foreground shrink-0 hover:text-foreground transition-colors"
+    >
       {{ t('board.poweredBy') }}FeedLog
-    </p>
+    </a>
   </div>
 </template>
 

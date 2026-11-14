@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { authClient } from '~/lib/auth-client'
+import { resolveAttachmentUrl } from '~/utils/attachment'
 
 // Accept invitation page at /invite?id=<invitationId>.
 //
@@ -113,6 +114,7 @@ const userInitials = computed(() => {
   const name = session.value?.user?.name ?? ''
   return name.slice(0, 2).toUpperCase()
 })
+const userImage = computed(() => resolveAttachmentUrl(session.value?.user?.image))
 </script>
 
 <template>
@@ -166,8 +168,8 @@ const userInitials = computed(() => {
         <div class="mt-6 flex items-center gap-3 px-4 py-3 rounded-xl border border-border bg-card text-left">
           <div class="w-10 h-10 rounded-full overflow-hidden bg-accent shrink-0 flex items-center justify-center">
             <img
-              v-if="session!.user.image"
-              :src="session!.user.image"
+              v-if="userImage"
+              :src="userImage"
               :alt="session!.user.name"
               class="w-full h-full object-cover"
               referrerpolicy="no-referrer"
@@ -204,8 +206,8 @@ const userInitials = computed(() => {
         <div class="mt-6 flex items-center gap-3 px-4 py-3 rounded-xl border border-border bg-card text-left">
           <div class="w-10 h-10 rounded-full overflow-hidden bg-accent shrink-0 flex items-center justify-center">
             <img
-              v-if="session!.user.image"
-              :src="session!.user.image"
+              v-if="userImage"
+              :src="userImage"
               :alt="session!.user.name"
               class="w-full h-full object-cover"
               referrerpolicy="no-referrer"

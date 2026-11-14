@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { resolveAttachmentUrl } from '~/utils/attachment'
+
 // Value picker shared by the filter chip and the Filters menu's second level.
 // Renders menu content only — the caller supplies the DropdownMenuContent wrapper.
 
@@ -65,6 +67,10 @@ function quickRange(days: number | 'quarter') {
 function initials(name: string) {
   return name.slice(0, 2).toUpperCase()
 }
+
+function optionImage(opt: FilterValueOption) {
+  return resolveAttachmentUrl(opt.image)
+}
 </script>
 
 <template>
@@ -121,7 +127,7 @@ function initials(name: string) {
         </span>
         <span v-if="opt.color" class="w-2 h-2 rounded-full shrink-0" :style="{ background: opt.color }" />
         <Avatar v-else-if="opt.sub !== undefined" class="w-5 h-5 shrink-0">
-          <img v-if="opt.image" :src="opt.image" :alt="opt.label" class="aspect-square size-full rounded-full object-cover" referrerpolicy="no-referrer">
+          <img v-if="optionImage(opt)" :src="optionImage(opt) || ''" :alt="opt.label" class="aspect-square size-full rounded-full object-cover" referrerpolicy="no-referrer">
           <AvatarFallback v-else class="bg-accent text-accent-foreground text-[8px] font-bold">
             {{ initials(opt.label) }}
           </AvatarFallback>

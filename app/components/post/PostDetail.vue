@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import '~/assets/css/md-editor-preview.css'
 import { toast } from 'vue-sonner'
-import { sanitizeAttachmentHtml } from '~/utils/attachment';
+const localePath = useLocalePath()
 
 // Event types for post mutations
 export interface PostUpdatedEvent {
@@ -24,6 +24,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   updated: [post: PostUpdatedEvent]
   deleted: [postId: string]
+  sourceConversation: [conversationId: string]
 }>()
 
 const { onUploadImg } = useUploadImg()
@@ -128,7 +129,9 @@ async function handleDeletePost() {
     await store.deletePost(props.slug)
     emit('deleted', postId)
   } catch (e: any) {
-    editError.value = e.data?.message || t('post.detail.errors.deleteFailed')
+    // Not editError: that line only renders inside the edit form, so a delete
+    // failure there was indistinguishable from the button doing nothing.
+    toast.error(e.data?.message || t('post.detail.errors.deleteFailed'))
   } finally {
     deleting.value = false
   }
@@ -314,7 +317,14 @@ function handleEditCommentCancel() {
 }
 
 async function handleDeleteComment(commentId: string) {
-  await store.deleteComment(props.slug, commentId)
+  try {
+    await store.deleteComment(props.slug, commentId)
+  }
+  catch (e: any) {
+    // Uncaught, this rejected into nowhere and the comment silently stayed put.
+    toast.error(e.data?.message || t('post.detail.errors.deleteFailed'))
+    return
+  }
   emitCommentCount()
 }
 
@@ -399,7 +409,7 @@ async function handleShare() {
               <div class="space-y-4">
                 <Input v-model="editTitle" class="h-10 text-lg font-heading font-bold" :placeholder="$t('post.detail.titlePlaceholder')" :maxlength="200" />
                 <div class="editor-preview-styled">
-                  <ThemedMdEditor v-model="editContent" language="en-US" :placeholder="$t('post.detail.editPlaceholder')" :preview="false" :max-length="10000" :toolbars="['bold', 'italic', 'strikeThrough', '-', 'title', 'unorderedList', 'orderedList', '-', 'link', 'image', 'code', 'codeRow', '-', 'previewOnly']" :sanitize="sanitizeAttachmentHtml" :style="{ height: '280px' }" @on-upload-img="onUploadImg" />
+                  <ThemedMdEditor v-model="editContent" language="en-US" :placeholder="$t('post.detail.editPlaceholder')" :preview="false" :max-length="10000" :toolbars="['bold', 'italic', 'strikeThrough', '-', 'title', 'unorderedList', 'orderedList', '-', 'link', 'image', 'code', 'codeRow', 'table', '-', 'previewOnly']" :style="{ height: '280px' }" @on-upload-img="onUploadImg" />
                 </div>
                 <p v-if="editError" class="text-sm text-destructive">{{ editError }}</p>
                 <div class="flex items-center gap-3 justify-end">
@@ -563,6 +573,18 @@ async function handleShare() {
               </div>
             </div>
           </div>
+        </div>
+        <div v-if="post.sourceConversationId" data-source-conversation>
+          <h4 class="font-heading text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-3">{{ $t('inbox.sourceConversation') }}</h4>
+          <NuxtLink
+            :to="localePath(`/dashboard/inbox?conversationId=${post.sourceConversationId}`)"
+            :title="post.sourceConversationTitle || $t('inbox.sourceConversation')"
+            class="flex min-w-0 items-center gap-2.5 rounded-sm text-sm font-semibold text-primary underline underline-offset-4 transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            @click="emit('sourceConversation', post.sourceConversationId)"
+          >
+            <Icon name="lucide:message-square" size="16" class="shrink-0" />
+            <span class="min-w-0 truncate">{{ post.sourceConversationTitle || $t('inbox.sourceConversation') }}</span>
+          </NuxtLink>
         </div>
         <!-- Admins never receive post-thread email, so the card would lie to them. -->
         <PostSubscribeCard v-if="post.id && hasAccount && !isOrgManager && !isMerged" :post-id="post.id" :subscribed="post.subscribed ?? false" @update:subscribed="post.subscribed = $event" />

@@ -58,3 +58,17 @@ invocation_logs = true
 
 [placement]
 mode = "smart"
+
+# Daily recovery; delayed messages invoke the shared queue consumer.
+[triggers]
+crons = ["0 3 * * *"]
+
+[[queues.producers]]
+binding = "INBOX_QUEUE"
+queue = "feedlog-inbox"
+
+[[queues.consumers]]
+queue = "feedlog-inbox"
+max_batch_size = 1
+max_retries = 3
+retry_delay = 60

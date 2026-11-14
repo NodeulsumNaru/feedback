@@ -1,9 +1,12 @@
 <script setup lang="ts">
-defineProps<{ actorName?: string; actorImage?: string | null }>()
+import { resolveAttachmentUrl } from '~/utils/attachment'
+
+const props = defineProps<{ actorName?: string; actorImage?: string | null }>()
 const emit = defineEmits<{ send: [note: string]; dismiss: [] }>()
 
 const composing = ref(false)
 const note = ref('')
+const actorImageUrl = computed(() => resolveAttachmentUrl(props.actorImage))
 
 function send(custom: boolean) {
   emit('send', custom ? note.value.trim() : '')
@@ -50,7 +53,7 @@ function send(custom: boolean) {
 
         <div class="flex items-center gap-2.5">
           <Avatar class="h-8 w-8">
-            <AvatarImage v-if="actorImage" :src="actorImage" :alt="actorName ?? ''" />
+            <AvatarImage v-if="actorImageUrl" :src="actorImageUrl" :alt="actorName ?? ''" />
             <AvatarFallback class="text-[12px] font-bold">{{ (actorName ?? '?').charAt(0).toUpperCase() }}</AvatarFallback>
           </Avatar>
           <span class="text-[15px] font-bold">{{ actorName }}</span>

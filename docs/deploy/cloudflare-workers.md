@@ -139,9 +139,25 @@ wrangler secret put RESEND_API_KEY
 ### 7. Build and deploy
 
 ```bash
-pnpm build:cf       # Nuxt build with NITRO_PRESET=cloudflare-module
+pnpm build:cf       # low-memory Nuxt build with NITRO_PRESET=cloudflare-module
 pnpm deploy:cf      # wrangler deploy --cwd .output
 ```
+
+`pnpm build:cf` runs `scripts/build-low-memory.mjs`, which keeps peak memory
+around 2 GB (a single `nuxt build` peaks above 5 GB):
+
+- The Vite client/server build and the Nitro server build run in **two separate
+  processes**, linked through Nuxt's `experimental.buildCache`, so the heap the
+  Vite phase never releases does not carry over into Nitro bundling.
+- Heavy server dependencies (Mastra, AI SDK, OpenAI, zod, pg, …) are left as bare
+  imports for `wrangler deploy` to bundle with esbuild (see
+  `scripts/defer-to-wrangler.ts`); wrangler also does the minification.
+- The heap cap defaults to 2048 MB; override with `BUILD_HEAP_MB`.
+
+When building with Cloudflare Workers Builds, set the **Build command** to
+`pnpm build:cf` and the **Deploy command** to `pnpm deploy:cf`. Run both in the
+same checkout: the generated `wrangler.json` points at files in `node_modules`
+and `.nuxt`.
 
 Your app is now live at the URL wrangler prints (e.g.
 `https://feedlog.your-subdomain.workers.dev`).
@@ -175,8 +191,8 @@ pnpm install                   # refresh dependencies
 pnpm build:cf && pnpm deploy:cf
 ```
 
-If the release includes new migrations, sign in as admin on the deployed
-site and visit `/setup` — the page runs the pending upgrade and redirects
+If the release includes new migrations, sign in with an email listed in
+`SYSTEM_ADMIN_EMAILS` on the deployed site and visit `/setup` — the page runs the pending upgrade and redirects
 back. Anonymous upgrades are refused (that would let any visitor trigger
 a schema change).
 

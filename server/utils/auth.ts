@@ -34,25 +34,38 @@ export async function requireAuth(event: H3Event) {
   return session
 }
 
-// A product-SSO session is an end-user identity only, never staff. Even when
-// its email happens to match an org member/owner
-// row, the org never intended a product's SSO handoff to confer dashboard /
-// staff access; granting it would silently elevate a borrowed-email session.
-// The host-binding collar only stops the *cross-org* case (member of a
-// different org); this closes the same-org coincidence. End-user write paths
-// (requireAuthInOrg) deliberately don't call this — posting/voting/commenting
-// is exactly what an SSO end-user is for.
-// Guests are covered here too: they hold no membership, so the permission checks
-// below would already refuse them, but a guest identity is never staff by
-// construction and saying so up front keeps that from resting on a lookup.
-function assertNotSsoSession(session: Awaited<ReturnType<typeof requireAuth>>) {
-  const ssoOrgId = (session.session as { ssoOrgId?: string | null }).ssoOrgId
-  if (ssoOrgId) {
-    throw createError({ statusCode: 403, message: 'SSO sessions cannot access staff areas' })
-  }
+// Product-SSO sessions are deliberately NOT rejected here: getUserSession has
+// already pinned them to this org, so the member row's real role is exactly what
+// the minting org asserted. Stepping outside that org is requireLocalSession's
+// job, not this one's.
+function assertNotGuestSession(session: Awaited<ReturnType<typeof requireAuth>>) {
   if ((session.user as { isAnonymous?: boolean | null }).isAnonymous) {
     throw createError({ statusCode: 403, message: 'Guest sessions cannot access staff areas' })
   }
+}
+
+// Gate for anything reaching beyond the org that vouched for this identity, or
+// changing the global user record behind it: an SSO email was asserted by one
+// org and verified by nobody. The stable `code` is what the client matches on —
+// prose changes with translations.
+export async function requireLocalSession(event: H3Event) {
+  const session = await requireAuth(event)
+  const ssoOrgId = (session.session as { ssoOrgId?: string | null }).ssoOrgId
+  if (ssoOrgId) {
+    throw createError({
+      statusCode: 403,
+      message: 'Sign in directly to perform this action',
+      data: { code: 'LOCAL_AUTH_REQUIRED' },
+    })
+  }
+  if ((session.user as { isAnonymous?: boolean | null }).isAnonymous) {
+    throw createError({
+      statusCode: 403,
+      message: 'Sign in directly to perform this action',
+      data: { code: 'LOCAL_AUTH_REQUIRED' },
+    })
+  }
+  return session
 }
 
 // Throws 403 if the current user lacks any of the requested actions in the
@@ -63,7 +76,7 @@ export async function requireOrgPermission(
   permissions: OrgPermissionStatement,
 ) {
   const session = await requireAuth(event)
-  assertNotSsoSession(session)
+  assertNotGuestSession(session)
   const orgId = event.context.orgId
   if (!orgId) {
     throw createError({ statusCode: 500, message: 'orgId missing from request context' })
@@ -82,7 +95,7 @@ export async function requireOrgPermission(
     body: { organizationId: orgId, permissions },
   })
   if (!result?.success) {
-    throw createError({ statusCode: 403, message: 'Forbidden' })
+    throw createError({ statusCode: 403, message: 'You do not have permission to perform this action', data: { code: 'PERMISSION_DENIED' } })
   }
   return { session, orgId }
 }
@@ -106,7 +119,7 @@ export async function requireAuthInOrg(event: H3Event) {
 // Permission-less — for fine-grained checks use requireOrgPermission.
 export async function requireOrgMember(event: H3Event) {
   const session = await requireAuth(event)
-  assertNotSsoSession(session)
+  assertNotGuestSession(session)
   const orgId = event.context.orgId
   if (!orgId) {
     throw createError({ statusCode: 500, message: 'orgId missing from request context' })
@@ -121,14 +134,13 @@ export async function requireOrgMember(event: H3Event) {
 
 // Non-throwing counterpart of requireOrgMember, for endpoints that serve
 // everyone but enrich the payload for staff — a throwing gate can't express
-// "same route, more fields". Product-SSO sessions are end-user identities, so
-// they get null here just as assertNotSsoSession rejects them elsewhere.
+// "same route, more fields". Guests get null; an SSO session is read at its real
+// member role, since callers only ask about the org this request resolved to.
 export function getOrgMemberRole(
   session: Awaited<ReturnType<typeof getUserSession>>,
   orgId: string | undefined,
 ): string | null {
   if (!session || !orgId) return null
-  if ((session.session as { ssoOrgId?: string | null }).ssoOrgId) return null
   if ((session.user as { isAnonymous?: boolean | null }).isAnonymous) return null
   const orgList = (session as { orgList?: { orgId: string; role: string }[] }).orgList
   return orgList?.find(o => o.orgId === orgId)?.role ?? null

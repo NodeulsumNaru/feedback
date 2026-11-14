@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { resolveAttachmentUrl } from '~/utils/attachment'
+
 const { signOut } = useAuth()
 const { data: session } = await useAuthSession()
 const localePath = useLocalePath()
@@ -18,20 +20,16 @@ const user = computed(() => isGuest.value ? undefined : session.value?.user)
 // next claims all over again. Claiming on load puts it in the realm that lives
 // long enough to finish, and every sign-in path ends in one.
 if (hasAccount.value) claimIfPending()
-// SSO sessions (signed in via the customer's product) are end-user only.
+// An SSO session carries its real member role inside its org, but may not change
+// the global user record — hence the password entry re-prompts.
 const isSsoSession = computed(
   () => !!(session.value as { session?: { ssoOrgId?: string | null } } | null)?.session?.ssoOrgId,
 )
-// Dashboard entry visibility matches the /dashboard middleware: any org
-// member (owner / manager / contributor) gets in. Do NOT gate on
-// `user.role === 'admin'` — that's the legacy better-auth admin plugin
-// field, no longer consulted now that access is driven by org-membership
-// role.
 const orgCtx = useOrgContext()
-// An SSO session is end-user only and can never reach the dashboard (server
-// gates 403, /dashboard middleware redirects). Hide the entry too so we don't
-// dangle a link that dead-ends — even if this email is an org member.
-const canEnterDashboard = computed(() => !!user.value && !!orgCtx.value.role && !isSsoSession.value)
+// Matches the /dashboard middleware: any org member gets in, SSO included — its
+// orgList holds only the minting org, so a role here can only mean a role there.
+// Do NOT gate on `user.role === 'admin'`: legacy better-auth admin plugin field.
+const canEnterDashboard = computed(() => !!user.value && !!orgCtx.value.role)
 
 // User initials as avatar fallback
 const initials = computed(() => {
@@ -41,19 +39,40 @@ const initials = computed(() => {
 
 // Fall back to initials when avatar image fails to load
 const avatarError = ref(false)
+const avatarUrl = computed(() => resolveAttachmentUrl(user.value?.image))
 watch(user, () => { avatarError.value = false })
 
-const { isOpen: showLoginModal } = useLoginModal()
+const { isOpen: showLoginModal, open: openLoginModal } = useLoginModal()
 const showChangePassword = ref(false)
+const showEditProfile = ref(false)
 
-// SSO sessions can't manage credentials — the backend blocks set/change-password
-// etc. Hide the control instead of offering an action that 403s.
+// Kept visible and asking for a direct sign-in when used: hiding them reads as a
+// broken page to the people most likely to arrive this way.
+function onChangePassword() {
+  if (isSsoSession.value) {
+    openLoginModal(LOCAL_AUTH_REASON)
+    return
+  }
+  showChangePassword.value = true
+}
 
-const navItems = [
+function onEditProfile() {
+  if (isSsoSession.value) {
+    openLoginModal(LOCAL_AUTH_REASON)
+    return
+  }
+  showEditProfile.value = true
+}
+
+const portalOrg = usePortalOrg()
+const navItems = computed(() => [
   { key: 'nav.feedback', to: '/', icon: 'lucide:message-square' },
   { key: 'nav.roadmap', to: '/roadmap', icon: 'lucide:map' },
   { key: 'nav.changelog', to: '/changelog', icon: 'lucide:newspaper' },
-]
+  ...(portalOrg.value.modules.helpCenter
+    ? [{ key: 'nav.helpCenter', to: '/help', icon: 'lucide:book-open' }]
+    : []),
+])
 
 async function handleSignOut() {
   await signOut()
@@ -130,7 +149,7 @@ watch(() => route.path, () => { mobileNavOpen.value = false })
             <DropdownMenuTrigger as-child>
               <button class="flex items-center rounded-full border border-border bg-card hover:border-primary transition-colors focus:outline-none p-1">
                 <Avatar class="w-8 h-8">
-                  <img v-if="user.image && !avatarError" :src="user.image" :alt="user.name" class="aspect-square size-full rounded-full object-cover" referrerpolicy="no-referrer" @error="avatarError = true">
+                  <img v-if="avatarUrl && !avatarError" :src="avatarUrl" :alt="user.name" class="aspect-square size-full rounded-full object-cover" referrerpolicy="no-referrer" @error="avatarError = true">
                   <!-- Brand accent (not a neutral gray) so identity chips carry the
                        brand; derived in deriveBrandVars. -->
                   <AvatarFallback v-else class="bg-accent text-accent-foreground text-sm font-bold">
@@ -147,7 +166,11 @@ watch(() => route.path, () => { mobileNavOpen.value = false })
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem v-if="!isSsoSession" @click="showChangePassword = true">
+              <DropdownMenuItem @click="onEditProfile">
+                <Icon name="lucide:user-round-pen" size="16" class="mr-2" />
+                {{ $t('nav.editProfile') }}
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="onChangePassword">
                 <Icon name="lucide:key-round" size="16" class="mr-2" />
                 {{ $t('nav.changePassword') }}
               </DropdownMenuItem>
@@ -193,6 +216,7 @@ watch(() => route.path, () => { mobileNavOpen.value = false })
     <!-- Login modal (global, controlled via useLoginModal) -->
     <LoginModal v-model:open="showLoginModal" />
     <ChangePasswordDialog v-model:open="showChangePassword" />
+    <EditProfileDialog v-model:open="showEditProfile" />
 
     <!-- Page content (header is position:fixed, so add top padding equal to header height) -->
     <main class="flex-1 w-full max-w-[1200px] mx-auto flex flex-col md:flex-row gap-8 px-4 md:px-6 lg:px-10 pt-20 md:pt-28 pb-6 md:pb-8">

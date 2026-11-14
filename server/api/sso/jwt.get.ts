@@ -43,8 +43,13 @@ export default defineEventHandler(async (event) => {
     // Mint the session and mark it with ssoOrgId. createSession persists the
     // override field because ssoOrgId carries no defaultValue (so the framework's
     // default-fields pass can't clobber it) — verified against better-auth 1.5.4.
+    // activeOrganizationId is pinned to the same org: better-auth's organization
+    // endpoints fall back to it when a call omits an explicit organizationId.
     const ctx = await auth.$context
-    const sessionRow = await ctx.internalAdapter.createSession(userId, false, { ssoOrgId: orgId })
+    const sessionRow = await ctx.internalAdapter.createSession(userId, false, {
+      ssoOrgId: orgId,
+      activeOrganizationId: orgId,
+    })
     if (!sessionRow?.token) {
       throw createError({ statusCode: 500, message: 'Failed to create SSO session' })
     }

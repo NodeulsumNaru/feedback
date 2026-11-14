@@ -1,8 +1,8 @@
 import { sendEmail, type SendEmailOptions } from './email'
 import { buildPostLink } from './post-link-builder'
 import { renderNotificationEmail } from './email-templates'
-import { type NotificationTypeKey } from '../../shared/constants/notifications'
-import { type NotificationPayload } from '../db/schemas'
+import type { NotificationTypeKey } from '../../shared/constants/notifications'
+import type { NotificationPayload } from '../db/schemas'
 
 // One recipient's decision + delivery, run inline in the triggering request's
 // waitUntil. Recipients are already resolved and English-only, so everything the
@@ -25,15 +25,20 @@ export interface SendNotificationInput {
 // Returns null for a type with no email template (a config error; the caller
 // logs it rather than sending blank).
 function buildNotificationEmail(input: SendNotificationInput): SendEmailOptions | null {
+  const postUrl = buildPostLink(input.orgSlug, `/p/${input.postSlug}`, input.requestOrigin)
+  const actorImage = input.payload.actorImage
   const content = renderNotificationEmail({
     typeKey: input.typeKey,
     postTitle: input.postTitle,
-    postUrl: buildPostLink(input.orgSlug, `/p/${input.postSlug}`, input.requestOrigin),
+    postUrl,
+    preferencesUrl: input.typeKey === 'post.created' || input.typeKey === 'post.user_commented'
+      ? buildPostLink(input.orgSlug, '/dashboard/settings/personal', input.requestOrigin)
+      : undefined,
     to: input.payload.to,
     note: input.payload.note,
     snippet: input.payload.snippet,
     actorName: input.payload.actorName,
-    actorImage: input.payload.actorImage,
+    actorImage: actorImage?.startsWith('/api/files/') ? new URL(actorImage, postUrl).href : actorImage,
     brandColor: input.brandColor,
   })
   if (!content) return null
