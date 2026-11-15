@@ -223,9 +223,14 @@ export default defineNuxtConfig({
     externals: {
       traceInclude: mastraTraceInclude,
       traceAlias: mastraTraceAlias,
+      // Node/Vercel 출력에서 Nitro의 node_modules 추적은 같은 패키지의 여러 버전 중
+      // 하나만 위로 올려서, @better-auth/telemetry(utils 0.4.2 필요)가 utils 0.5.0을
+      // 보고 `base64.mjs`를 못 찾아 서버가 시작조차 못 했음. better-auth 계열은
+      // 추적 대신 번들해서 import마다 맞는 버전을 쓰게 함.
+      inline: ['better-auth', '@better-auth/'],
     },
     // Mastra's hashing dependency ships a native Wasm module for Workers.
-    experimental: { wasm: true, tasks: true, legacyExternals: true },
+    experimental: { wasm: true, tasks: true, legacyExternals: isCloudflare },
     tasks: {
       'inbox:schedule': { handler: resolver.resolve('./server/tasks/inbox/schedule.ts') },
     },
