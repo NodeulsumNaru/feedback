@@ -1,0 +1,17 @@
+# Edge proxy for the "two-host" deployment (docs/deploy/cloudflare-edge-proxy.md).
+# Keeps the public address on Cloudflare (Workers Free is fine: proxying uses ~1 ms
+# of CPU per request) and forwards everything to the app running on Vercel.
+name = "feedback"
+main = "src/index.ts"
+compatibility_date = "2026-03-01"
+workers_dev = true
+
+[vars]
+# The Vercel production URL of the app, without a trailing slash.
+ORIGIN = "https://CHANGE-ME.vercel.app"
+
+# Secret (set once):  npx wrangler secret put EDGE_PROXY_SECRET -c deploy/cloudflare-edge-proxy/wrangler.toml
+# Use the same value as EDGE_PROXY_SECRET in the Vercel project's environment.
+
+[observability]
+enabled = true

@@ -1,5 +1,10 @@
 # Deploying FeedLog to Cloudflare Workers
 
+> **On Workers Free?** The 10 ms CPU limit per request is too small for Nuxt SSR
+> (`Worker exceeded CPU time limit`). See
+> [cloudflare-edge-proxy.md](./cloudflare-edge-proxy.md): keep the free Worker as an
+> edge proxy and run the app on Vercel's free tier.
+
 Cloudflare Workers gives FeedLog a serverless edge deployment — zero idle
 cost, global distribution, native integration with R2 for blob storage and
 Hyperdrive for accelerated Postgres connections.
