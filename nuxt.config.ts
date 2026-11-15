@@ -238,7 +238,7 @@ export default defineNuxtConfig({
       [!process.env.NITRO_PRESET?.startsWith('cloudflare') && !process.env.NITRO_PRESET?.startsWith('vercel') && process.env.VERCEL !== '1'
         ? '*/5 * * * *' : '0 3 * * *']: ['inbox:schedule'],
     },
-    vercel: { functions: { experimentalTriggers: [{ type: 'queue/v2beta', topic: 'feedlog-inbox', retryAfterSeconds: 60 }] } },
+    vercel: { functions: { experimentalTriggers: [{ type: 'queue/v2beta', topic: 'feedlog-inbox', consumer: 'feedlog-inbox-consumer', retryAfterSeconds: 60 }] } },
     // Workers use pg's JavaScript client; its optional native addon is Node-only.
     alias: isCloudflare
       ? {
