@@ -256,7 +256,7 @@ export default defineNuxtConfig({
     // - maxParallelFileOps → 동시에 읽어 들이는 파일 수 제한
     // - Cloudflare에서는 무거운 의존성 번들을 wrangler(esbuild)로 넘김
     rollupConfig: isCloudflare
-      ? { cache: false, maxParallelFileOps: 8, plugins: [deferToWrangler()] }
+      ? { cache: false, maxParallelFileOps: 8, plugins: [deferToWrangler(resolver.resolve('.'))] }
       : {},
     cloudflare: {
       // deferToWrangler로 넘긴 패키지(pg 등) 안쪽 import에도 같은 대체 적용

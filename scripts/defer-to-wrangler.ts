@@ -32,14 +32,30 @@ const matches = (id: string) => DEFERRED_PACKAGES.some(p =>
 // syncBuiltinAliasesToWrangler()가 만든 전역 prelude 파일 경로 (rollup:before에서 설정)
 let preludePath: string | undefined
 
-export function deferToWrangler(): Plugin {
+export function deferToWrangler(rootDir: string): Plugin {
+  // wrangler(esbuild)는 bare import를 프로젝트 루트 기준으로 찾으므로, 비교 기준도 루트
+  const rootImporter = join(rootDir, 'server', '__defer_to_wrangler__.ts')
+  const rootIds = new Map<string, Promise<string | undefined>>()
   return {
     name: 'feedback:defer-to-wrangler',
     resolveId: {
       order: 'pre',
-      handler(source) {
-        if (matches(source)) return { id: source, external: true }
-        return null
+      async handler(source, importer, options) {
+        if (!matches(source)) return null
+        // bare 이름('zod')으로 넘기면 esbuild가 프로젝트 루트 기준으로 다시 찾아서
+        // 패키지마다 다른 버전(예: better-auth가 쓰는 zod vs 루트 zod)이 한 버전으로
+        // 섞여버림 → `z.validate is not a function` 같은 런타임 오류.
+        // Rollup이 import한 쪽 기준으로 찾은 실제 파일 경로를 그대로 넘겨서 버전 유지.
+        const [resolved, rootId] = await Promise.all([
+          this.resolve(source, importer, { ...options, skipSelf: true }),
+          rootIds.get(source) ?? (rootIds.set(source, this.resolve(source, rootImporter, { skipSelf: true })
+            .then(r => r?.id)), rootIds.get(source)!),
+        ])
+        if (!resolved || resolved.external) return resolved
+        // 루트에서 찾은 것과 같은 파일일 때만 bare import로 넘김. 다르면(다른 버전)
+        // Rollup이 지금까지처럼 직접 번들 → 버전이 섞이지 않음.
+        if (resolved.id !== rootId) return resolved
+        return { id: source, external: true }
       },
     },
     // 엔트리 맨 앞에서 prelude를 import → 다른 어떤 모듈보다 먼저 평가됨.
