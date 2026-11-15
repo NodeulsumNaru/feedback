@@ -12,7 +12,7 @@
 // 힙 상한은 BUILD_HEAP_MB(기본 2048)로 조절. 상한을 낮게 잡아야 V8이 GC를
 // 미루지 않고 자주 돌려서 실제 RSS가 상한 근처에서 유지됨.
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 const heapMb = process.env.BUILD_HEAP_MB || '2048'
 // pnpm의 .bin 래퍼로 실행해야 NODE_PATH가 잡혀서 nuxt.config.ts의 @nuxt/kit 등이 해석됨
@@ -45,4 +45,25 @@ for (const phase of ['vite', 'nitro']) {
 // package.json "build" 스크립트와 동일한 후처리: 런타임 마이그레이션 파일 동봉
 mkdirSync('.output/server/db', { recursive: true })
 cpSync('server/db/migrations', '.output/server/db/migrations', { recursive: true })
+// Vercel: Nitro는 앱 전체를 __fallback.func 하나로 묶고 모든 경로가 그 함수로 간다.
+// 그런데 큐 트리거(experimentalTriggers)가 붙은 함수는 공개 주소가 없어지고 큐
+// 인프라만 호출할 수 있어서, 트리거를 거기 두면 사이트 전체가 404가 된다.
+// → 트리거를 앱 함수에서 떼어 내고, 같은 번들을 복사한 전용 함수(_inbox-queue.func)에 붙인다.
+//   수신 요청은 server/middleware/inbox-queue.ts가 ce-type 헤더로 먼저 가로채 처리한다.
+const vercelFn = '.vercel/output/functions/__fallback.func'
+if (existsSync(`${vercelFn}/.vc-config.json`)) {
+  const config = JSON.parse(readFileSync(`${vercelFn}/.vc-config.json`, 'utf8'))
+  if (config.experimentalTriggers?.length) {
+    const consumerFn = '.vercel/output/functions/_inbox-queue.func'
+    rmSync(consumerFn, { recursive: true, force: true })
+    // cp -a: node_modules의 상대 심볼릭 링크를 그대로 보존
+    const cp = spawnSync('cp', ['-a', vercelFn, consumerFn], { stdio: 'inherit' })
+    if (cp.status !== 0) process.exit(cp.status ?? 1)
+    writeFileSync(`${consumerFn}/.vc-config.json`, JSON.stringify(config, null, 2))
+    delete config.experimentalTriggers
+    writeFileSync(`${vercelFn}/.vc-config.json`, JSON.stringify(config, null, 2))
+    console.log('✔ [build-low-memory] 큐 트리거를 _inbox-queue.func로 분리')
+  }
+}
+
 console.log('\n✔ [build-low-memory] 완료')
