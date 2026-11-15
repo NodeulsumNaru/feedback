@@ -64,4 +64,16 @@ export default {
     }
     return response
   },
+
+  /**
+   * No-op queue consumer. The old full-app Worker was registered as a consumer of a
+   * Cloudflare Queue in the dashboard; Cloudflare refuses to deploy a script that has
+   * a consumer but no queue() handler. The app (and its queue) now runs on Vercel, so
+   * anything still arriving here is stale: acknowledge and drop it.
+   * Remove the consumer in the dashboard (Queues → <queue> → Settings → Consumers)
+   * and this handler can be deleted.
+   */
+  async queue(batch: MessageBatch): Promise<void> {
+    batch.ackAll()
+  },
 }
